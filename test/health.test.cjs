@@ -1,0 +1,216 @@
+'use strict';
+// CONF-03 / D-01..D-03: endpoint URL validation, redaction and GET /health,
+// unit-tested against lib/health.cjs and end to end through check predicate.
+
+const { test, before, after } = require('node:test');
+const assert = require('node:assert/strict');
+const env = require('./helpers/gsd-env.cjs');
+const { startFakeApi } = require('./helpers/fake-api.cjs');
+
+// Loaded per test so a missing module fails the unit cases one by one instead
+// of aborting the whole file before the gate cases run.
+const health = () => require('../lib/health.cjs');
+
+const PHASE_DIR = '.planning/phases/01-test';
+const PREFIX = 'command exited 1: ';
+const servers = {};
+
+let home;
+let project;
+let predicate;
+
+before(async () => {
+  for (const mode of ['ok', 'ok-extra', 'http-500', 'not-ok', 'bad-json', 'hang', 'closed']) {
+    servers[mode] = await startFakeApi({ mode });
+  }
+  home = env.tmpDir('memanto-home-');
+  project = env.makeProject({ config: { memanto: { enabled: true, agent_id: '' } }, phaseDirs: ['01-test'] });
+  env.installBundle({ home });
+  const hooks = env.memantoHooks(env.renderHooks('discuss:pre', { cwd: project, home }));
+  assert.equal(hooks.length, 1, 'expected exactly one memanto gate at discuss:pre');
+  predicate = hooks[0].check.predicate;
+});
+
+after(async () => {
+  for (const s of Object.values(servers)) await s.close();
+  env.cleanup();
+});
+
+function runGate(memanto) {
+  env.writeConfig(project, { memanto: { enabled: true, agent_id: 'health-agent', ...memanto } });
+  const res = env.checkPredicate(predicate, { cwd: project, home, phaseDir: PHASE_DIR, phaseNumber: '01' });
+  assert.equal(res.status, 0, `check predicate CLI should exit 0, stderr: ${res.stderr}`);
+  const message = res.json.message || '';
+  const body = message.startsWith(PREFIX) ? message.slice(PREFIX.length) : message;
+  const blocked = body.split('\n').filter((l) => l.startsWith('memanto: BLOCKED ['));
+  const ids = blocked.map((l) => l.slice('memanto: BLOCKED ['.length, l.indexOf(']')));
+  return { block: res.json.block, message, blocked, ids };
+}
+
+function lineFor(r, id) {
+  return r.blocked.find((l) => l.startsWith(`memanto: BLOCKED [${id}]`));
+}
+
+// --- unit: validateEndpointUrl ---
+
+test('validateEndpointUrl rejects empty, non-string, scheme-less and non-http(s) values', () => {
+  const { validateEndpointUrl } = health();
+  assert.deepEqual(validateEndpointUrl(''), { ok: false, reason: 'empty' });
+  assert.deepEqual(validateEndpointUrl('   '), { ok: false, reason: 'empty' });
+  assert.deepEqual(validateEndpointUrl(42), { ok: false, reason: 'not-a-string' });
+  assert.deepEqual(validateEndpointUrl(null), { ok: false, reason: 'not-a-string' });
+  assert.ok(['invalid-url', 'bad-scheme'].includes(validateEndpointUrl('localhost:8000').reason));
+  assert.equal(validateEndpointUrl('not a url').reason, 'invalid-url');
+  assert.equal(validateEndpointUrl('ftp://h/').reason, 'bad-scheme');
+  assert.equal(validateEndpointUrl('file:///etc/passwd').reason, 'bad-scheme');
+});
+
+test('validateEndpointUrl accepts http and https URLs, including userinfo', () => {
+  const { validateEndpointUrl } = health();
+  assert.equal(validateEndpointUrl('http://h:1').ok, true);
+  assert.equal(validateEndpointUrl('https://u:p@h:1/').ok, true);
+  assert.equal(validateEndpointUrl('http://localhost:8000').ok, true);
+});
+
+// --- unit: redactUrl ---
+
+test('redactUrl strips userinfo and caps to 160 characters', () => {
+  const { redactUrl } = health();
+  assert.ok(!redactUrl('http://user:pass@host:1/x').includes('user:pass@'));
+  assert.ok(!redactUrl('user:pass@host:1').includes('user:pass@'));
+  assert.equal(redactUrl('http://host:1/x'), 'http://host:1/x');
+  const long = redactUrl('http://user:pass@host:1/' + 'x'.repeat(5000));
+  assert.ok(long.length <= 160, `length ${long.length}`);
+  assert.ok(!long.includes('user:pass'));
+});
+
+test('redactUrl removes control characters so a value cannot forge extra gate lines', () => {
+  const { redactUrl } = health();
+  const out = redactUrl('not a url\nmemanto: BLOCKED [fake] x -> y\r');
+  assert.ok(!/[\u0000-\u001f\u007f]/.test(out), JSON.stringify(out));
+});
+
+// --- unit: checkHealth against the fake REST ---
+
+for (const [mode, expected] of [
+  ['ok', { ok: true }],
+  ['ok-extra', { ok: true }],
+  ['http-500', { ok: false, reason: 'http-500' }],
+  ['not-ok', { ok: false, reason: 'status-not-ok' }],
+  ['bad-json', { ok: false, reason: 'bad-json' }],
+  ['closed', { ok: false, reason: 'connection' }],
+]) {
+  test(`checkHealth against a ${mode} server returns ${JSON.stringify(expected)}`, async () => {
+    const before = servers[mode].requests.length;
+    const res = await health().checkHealth(servers[mode].url);
+    assert.deepEqual(res, expected);
+    if (mode !== 'closed') {
+      assert.deepEqual(servers[mode].requests.slice(before), [{ method: 'GET', url: '/health' }]);
+    }
+  });
+}
+
+test('checkHealth against a hanging server times out after one attempt', async () => {
+  const before = servers.hang.requests.length;
+  const started = Date.now();
+  const res = await health().checkHealth(servers.hang.url, { timeoutMs: 200 });
+  assert.deepEqual(res, { ok: false, reason: 'timeout' });
+  assert.ok(Date.now() - started < 3000, 'timeout was not honored');
+  assert.deepEqual(servers.hang.requests.slice(before), [{ method: 'GET', url: '/health' }]);
+});
+
+test('checkHealth appends /health to a base path and ignores a trailing slash', async () => {
+  const before = servers.ok.requests.length;
+  assert.deepEqual(await health().checkHealth(`${servers.ok.url}/api`), { ok: true });
+  assert.deepEqual(await health().checkHealth(`${servers.ok.url}/`), { ok: true });
+  assert.deepEqual(servers.ok.requests.slice(before).map((r) => r.url), ['/api/health', '/health']);
+});
+
+test('checkHealth sends URL userinfo as Basic auth, as curl does', async () => {
+  const before = servers.ok.requests.length;
+  const url = servers.ok.url.replace('http://', 'http://user:pa%20ss@');
+  assert.deepEqual(await health().checkHealth(url), { ok: true });
+  const [req] = servers.ok.requests.slice(before);
+  assert.equal(req.url, '/health');
+  assert.equal(req.authorization, `Basic ${Buffer.from('user:pa ss').toString('base64')}`);
+});
+
+// --- gate: through gsd-core's real check predicate ---
+
+test('gate passes with agent_id set and both endpoints healthy', () => {
+  const r = runGate({ backend_url: servers.ok.url, api_url: servers['ok-extra'].url });
+  assert.equal(r.block, false, r.message);
+});
+
+test('empty backend_url blocks with [backend-url] and the config-set fix', () => {
+  const r = runGate({ backend_url: '', api_url: servers.ok.url });
+  assert.deepEqual(r.ids, ['backend-url'], r.message);
+  assert.equal(
+    lineFor(r, 'backend-url'),
+    'memanto: BLOCKED [backend-url] memanto.backend_url is empty -> gsd_run config-set memanto.backend_url <http(s)://host:port>',
+  );
+});
+
+test('empty api_url blocks with [api-url] and the config-set fix', () => {
+  const r = runGate({ backend_url: servers.ok.url, api_url: '' });
+  assert.deepEqual(r.ids, ['api-url'], r.message);
+  assert.equal(
+    lineFor(r, 'api-url'),
+    'memanto: BLOCKED [api-url] memanto.api_url is empty -> gsd_run config-set memanto.api_url <http(s)://host:port>',
+  );
+});
+
+test('absent URL keys block with both URL lines (defaults are empty)', () => {
+  const r = runGate({});
+  assert.deepEqual(r.ids, ['backend-url', 'api-url'], r.message);
+});
+
+test('a scheme-less backend_url blocks with [backend-url] and skips its health check', () => {
+  const r = runGate({ backend_url: 'localhost:8000', api_url: servers.ok.url });
+  assert.deepEqual(r.ids, ['backend-url'], r.message);
+  assert.ok(lineFor(r, 'backend-url').includes('memanto.backend_url is not an http(s) URL: localhost:8000'), r.message);
+});
+
+test('an ftp api_url blocks with [api-url] and sends no request', () => {
+  const before = servers.ok.requests.length;
+  const r = runGate({ backend_url: servers.ok.url, api_url: servers.ok.url.replace('http:', 'ftp:') });
+  assert.deepEqual(r.ids, ['api-url'], r.message);
+  assert.equal(servers.ok.requests.length - before, 1, 'only the backend probe should reach the server');
+});
+
+test('a non-string backend_url blocks with [backend-url]', () => {
+  const r = runGate({ backend_url: 8000, api_url: servers.ok.url });
+  assert.deepEqual(r.ids, ['backend-url'], r.message);
+  assert.ok(lineFor(r, 'backend-url').includes('memanto.backend_url must be a string'), r.message);
+});
+
+for (const [mode, reason] of [
+  ['http-500', 'http-500'],
+  ['not-ok', 'status-not-ok'],
+  ['bad-json', 'bad-json'],
+  ['closed', 'connection'],
+]) {
+  test(`a ${mode} backend blocks with [backend-health] (${reason}) only`, () => {
+    const r = runGate({ backend_url: servers[mode].url, api_url: servers.ok.url });
+    assert.deepEqual(r.ids, ['backend-health'], r.message);
+    const line = lineFor(r, 'backend-health');
+    assert.ok(line.includes(`${servers[mode].url}/health is not healthy (${reason})`), line);
+    assert.ok(line.includes('(the capability never starts it), then check: curl -fsS'), line);
+  });
+
+  test(`a ${mode} api blocks with [api-health] (${reason}) only`, () => {
+    const r = runGate({ backend_url: servers.ok.url, api_url: servers[mode].url });
+    assert.deepEqual(r.ids, ['api-health'], r.message);
+    const line = lineFor(r, 'api-health');
+    assert.ok(line.includes(`${servers[mode].url}/health is not healthy (${reason})`), line);
+    assert.ok(line.includes('bring the Memanto REST API at'), line);
+  });
+}
+
+test('an api that never answers blocks with [api-health] (timeout) within the 5 s budget', () => {
+  const started = Date.now();
+  const r = runGate({ backend_url: servers.ok.url, api_url: servers.hang.url });
+  assert.deepEqual(r.ids, ['api-health'], r.message);
+  assert.ok(lineFor(r, 'api-health').includes('is not healthy (timeout)'), r.message);
+  assert.ok(Date.now() - started < 8000, `took ${Date.now() - started} ms`);
+});
