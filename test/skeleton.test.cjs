@@ -5,6 +5,7 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const env = require('./helpers/gsd-env.cjs');
+const { startFakeApi } = require('./helpers/fake-api.cjs');
 
 const BREAK_GLASS = '(memanto.enabled=false disables Memanto for this project)';
 const PHASE_DIR = '.planning/phases/01-test';
@@ -12,8 +13,12 @@ const PHASE_DIR = '.planning/phases/01-test';
 let consentBefore;
 let home;
 let project;
+let backend;
+let api;
 
-before(() => {
+before(async () => {
+  backend = await startFakeApi({ mode: 'ok' });
+  api = await startFakeApi({ mode: 'ok' });
   consentBefore = env.realConsentStamp();
   home = env.tmpDir('memanto-home-');
   project = env.makeProject({
@@ -22,7 +27,11 @@ before(() => {
   });
 });
 
-after(() => env.cleanup());
+after(async () => {
+  await backend.close();
+  await api.close();
+  env.cleanup();
+});
 
 function renderedGate() {
   const rendered = env.renderHooks('discuss:pre', { cwd: project, home });
@@ -55,8 +64,10 @@ test('gate blocks with the agent-id line and break-glass when memanto.agent_id i
   assert.ok(res.json.message.includes(BREAK_GLASS), `break-glass missing: ${res.json.message}`);
 });
 
-test('gate passes once memanto.agent_id is set', () => {
-  env.writeConfig(project, { memanto: { enabled: true, agent_id: 'skeleton-agent' } });
+test('gate passes once memanto.agent_id is set and both endpoints are healthy', () => {
+  env.writeConfig(project, {
+    memanto: { enabled: true, agent_id: 'skeleton-agent', backend_url: backend.url, api_url: api.url },
+  });
   const gate = renderedGate();
   const res = env.checkPredicate(gate.check.predicate, { cwd: project, home, phaseDir: PHASE_DIR, phaseNumber: '01' });
   assert.equal(res.status, 0, `check predicate CLI should exit 0, stderr: ${res.stderr}`);
