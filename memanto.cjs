@@ -19,6 +19,7 @@ const PROBE = path.join(__dirname, 'scripts', 'check-probe.cjs');
 const OWN_MANIFEST = path.join(__dirname, 'capability.json');
 const INTERNAL_FIX = 'report this failure; memanto.enabled=false disables Memanto for this project';
 const REASON_MAX = 300;
+const PROBE_TIMEOUT_MS = 15000;
 const CONTROL = /[\x00-\x1f\x7f-\x9f]/g;
 
 function record(id, status, message, fix) {
@@ -60,10 +61,23 @@ function reinstallFix() {
 }
 
 // The gate's own checks, from the same check library, in a child process
-// (the router cannot await the health probes). The probe's run time is bounded
-// by the gate's own 5 s health budget (lib/health.cjs), probes run in parallel.
-function gateChecks(cwd) {
-  const res = spawnSync(process.execPath, [PROBE], { cwd, env: process.env, encoding: 'utf8' });
+// (the router cannot await the health probes). The health probes inside it run
+// in parallel within the gate's 5 s budget (lib/health.cjs). PROBE_TIMEOUT_MS
+// (owner decision, 2026-11-20) bounds everything else, such as a config file
+// that blocks on read (a FIFO), so doctor reports a check-probe error instead
+// of hanging. probe and timeoutMs are injectable for tests only.
+function gateChecks(cwd, { probe = PROBE, timeoutMs = PROBE_TIMEOUT_MS } = {}) {
+  const res = spawnSync(process.execPath, [probe], { cwd, env: process.env, encoding: 'utf8', timeout: timeoutMs });
+  if (res.error && res.error.code === 'ETIMEDOUT') {
+    return [
+      record(
+        'check-probe',
+        'error',
+        `check probe timed out after ${timeoutMs} ms and was stopped (${res.signal || 'killed'}); a config file that blocks on read, such as a FIFO, or a stalled endpoint can cause this`,
+        'make sure .planning/config.json and the memanto config files are regular readable files, then rerun doctor; memanto.enabled=false disables Memanto for this project',
+      ),
+    ];
+  }
   if (res.error) {
     return [record('check-probe', 'error', `check probe did not run: ${clean(res.error.message, REASON_MAX)}`, INTERNAL_FIX)];
   }
@@ -312,7 +326,7 @@ function route(ctx) {
   return undefined;
 }
 
-module.exports = { route };
+module.exports = { route, gateChecks, PROBE_TIMEOUT_MS };
 
 if (require.main === module) {
   route({
