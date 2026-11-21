@@ -131,13 +131,72 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| (filled by roadmapper) | | |
+| INST-01 | Phase 1 | Pending |
+| INST-02 | Phase 1 | Pending |
+| INST-03 | Phase 1 | Pending |
+| INST-04 | Phase 1 | Pending |
+| INST-05 | Phase 1 | Pending |
+| CONF-01 | Phase 1 | Pending |
+| CONF-02 | Phase 1 | Pending |
+| CONF-03 | Phase 1 | Pending |
+| CONF-04 | Phase 2 | Pending |
+| CONF-05 | Phase 6 | Pending |
+| CONF-06 | Phase 7 | Pending |
+| SESS-01 | Phase 2 | Pending |
+| SESS-02 | Phase 2 | Pending |
+| SESS-03 | Phase 3 | Pending |
+| SESS-04 | Phase 2 | Pending |
+| SESS-05 | Phase 2 | Pending |
+| GATE-01 | Phase 2 | Pending |
+| GATE-02 | Phase 5 | Pending |
+| GATE-03 | Phase 1 | Pending |
+| GATE-04 | Phase 2 | Pending |
+| GATE-05 | Phase 2 | Pending |
+| GATE-06 | Phase 1 | Pending |
+| RECL-01 | Phase 3 | Pending |
+| RECL-02 | Phase 6 | Pending |
+| RECL-03 | Phase 3 | Pending |
+| RECL-04 | Phase 3 | Pending |
+| RECL-05 | Phase 5 | Pending |
+| CNFL-01 | Phase 4 | Pending |
+| CNFL-02 | Phase 4 | Pending |
+| CNFL-03 | Phase 4 | Pending |
+| CNFL-04 | Phase 4 | Pending |
+| CAPT-01 | Phase 4 | Pending |
+| CAPT-02 | Phase 5 | Pending |
+| CAPT-03 | Phase 5 | Pending |
+| CAPT-04 | Phase 4 | Pending |
+| CAPT-05 | Phase 4 | Pending |
+| CAPT-06 | Phase 4 | Pending |
+| CAPT-07 | Phase 5 | Pending |
+| LIFE-01 | Phase 6 | Pending |
+| LIFE-02 | Phase 6 | Pending |
+| LIFE-03 | Phase 4 | Pending |
+| LIFE-04 | Phase 6 | Pending |
+| LIFE-05 | Phase 6 | Pending |
+| LIFE-06 | Phase 6 | Pending |
+| LIFE-07 | Phase 4 | Pending |
+| CMD-01 | Phase 2 | Pending |
+| CMD-02 | Phase 2 | Pending |
+| CMD-03 | Phase 3 | Pending |
+| CMD-04 | Phase 4 | Pending |
+| CMD-05 | Phase 5 | Pending |
+| CMD-06 | Phase 6 | Pending |
+| CMD-07 | Phase 6 | Pending |
+| COVR-01 | Phase 7 | Pending |
+| COVR-02 | Phase 7 | Pending |
+| TEST-01 | Phase 1 | Pending |
+| TEST-02 | Phase 1 | Pending |
+| TEST-03 | Phase 7 | Pending |
+| TEST-04 | Phase 7 | Pending |
+| TEST-05 | Phase 7 | Pending |
+| TEST-06 | Phase 7 | Pending |
 
 **Coverage:**
 - v1 requirements: 60 total
-- Mapped to phases: 0
-- Unmapped: 60 ⚠️
+- Mapped to phases: 60
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-11-20*
-*Last updated: 2026-11-20 after initial definition*
+*Last updated: 2026-11-20 after roadmap creation*
