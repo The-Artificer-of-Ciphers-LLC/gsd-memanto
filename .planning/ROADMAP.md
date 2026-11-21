@@ -33,14 +33,14 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. `gsd_run memanto doctor` reports four cases as errors: the capability is enabled in config but not loaded, it is not consented, it is outside `engines.gsd`, or it does not render at a declared point.
   4. `node --test` validates the manifest through gsd-core's real validator and loader on a temporary `GSD_HOME` and renders hooks through the real `loop render-hooks`. It fails if any hook sits at an undispatched (point, kind) pair or trips a loader trap: `MEMORY-RECALL.md`, non-host `consumes`, an invalid `into` role, `when` on an undeclared key, or a reserved prefix. It also exercises the gate against a fake `memanto` CLI and a fake REST server.
   5. The spike outcomes are recorded, and the bundle reflects them. They answer three questions: whether a gate halts a real run at `discuss:pre` and `ship:pre` (including headless), whether a `ref.command` step dispatches the third-party `memanto` command family on gsd-core 1.20.1, and whether global-scope skills are staged.
-**Plans:** 4/9 plans executed
+**Plans:** 5/9 plans executed
 
 Plans:
 **Wave 1**
 - [x] 01-01-PLAN.md — Tracer: staged bundle installs globally; discuss:pre gate halts on empty agent_id, passes when set; install/activation tests and npm test runner
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 01-02-PLAN.md — Full gate check set: MemPalace exclusion, agent_id edges, endpoint validation and health checks, output budget, fake REST and fake memanto doubles
+- [x] 01-02-PLAN.md — Full gate check set: MemPalace exclusion, agent_id edges, endpoint validation and health checks, output budget, fake REST and fake memanto doubles
 - [x] 01-03-PLAN.md — Config resolver matches gsd-core resolution (project/workstream layers) with a host contract test
 - [x] 01-04-PLAN.md — Conformance: zero-warning load, dispatch oracle per host version, loader-trap fixtures
 - [x] 01-05-PLAN.md — Spike Q1/Q2 (live headless discuss:pre and ship:pre halts, ref.command dispatch) with regression tests and the D-09 fallback
@@ -147,7 +147,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Walking Skeleton | 4/9 | In Progress | - |
+| 1. Walking Skeleton | 5/9 | In Progress | - |
 | 2. Verified Identity at Every Gate | 0/TBD | Not started | - |
 | 3. Memory-Informed Discuss and Plan | 0/TBD | Not started | - |
 | 4. Decisions Remembered, Conflicts Resolved | 0/TBD | Not started | - |
