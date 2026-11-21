@@ -101,10 +101,31 @@ test('install, render-hooks and check predicate leave gsd-core bin and workflows
   assert.deepStrictEqual(afterSnap, before);
 });
 
-test('host behavior: the gate-only manifest installs without --yes (gate predicates are not consent-gated)', () => {
+// A copy of the staged bundle with the command family removed (gate only).
+function stagedCopyGateOnly() {
+  const src = env.stageBundle();
+  const dest = path.join(env.tmpDir('memanto-gateonly-stage-'), 'memanto');
+  fs.cpSync(src, dest, { recursive: true });
+  const manifestPath = path.join(dest, 'capability.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  delete manifest.commands;
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+  fs.rmSync(path.join(dest, 'memanto.cjs'), { force: true });
+  return dest;
+}
+
+test('host behavior: a gate-only manifest installs without --yes (gate predicates are not consent-gated)', () => {
+  const home = env.tmpDir('memanto-home-');
+  const res = env.gsd(env.installArgs(stagedCopyGateOnly(), null, false), { home });
+  assert.equal(parse(res).status, 'installed', `${res.stdout}${res.stderr}`);
+});
+
+test('the release bundle declares the memanto command family, so install without --yes reports aborted', () => {
   const home = env.tmpDir('memanto-home-');
   const res = env.gsd(env.installArgs(env.stageBundle(), null, false), { home });
-  assert.equal(parse(res).status, 'installed', `${res.stdout}${res.stderr}`);
+  assert.equal(parse(res).status, 'aborted', `${res.stdout}${res.stderr}`);
+  assert.equal(hasLedgerEntry(home), false);
+  assert.equal(fs.existsSync(bundleDir(home)), false);
 });
 
 test('install without --yes of a bundle with an executable surface reports aborted and leaves nothing behind', () => {
