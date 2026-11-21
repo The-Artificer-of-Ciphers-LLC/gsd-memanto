@@ -232,4 +232,95 @@ Not fixable inside a capability without modifying gsd-core (T-01-17, accepted). 
 
 ## Acceptance run (D-08)
 
-pending — plan 01-09
+Status: **PARTIAL, stopped at an owner checkpoint.** Runs (a) and (b), doctor and the gsd-core comparison are done. The headless runs (c) and (d) and the headless half of (e) were not run, because the Claude Code auto-mode permission classifier denied them (see "Blocked runs" below). Task 2 (publish) has not started.
+
+Run by the agent on 2026-11-21 from 05:07Z, against the owner's real home (GSD_HOME unset). Transcripts and snapshots are in the session scratchpad (`<scratch>/acc0109/`), not in the repo.
+
+### Precondition and suite gates
+
+```
+$ curl -fsS http://localhost:8000/health                -> {"status":"ok"}
+$ curl -fsS http://plex2.nomorestars.com:8080/health    -> {..."status":"ok"}
+$ claude --version                                      -> 2.1.330 (Claude Code)
+$ npm test                                              (installed gsd-core 1.20.1)  # tests 188 / # pass 187 / # fail 0 / # skipped 1, exit 0
+$ GSD_CORE_DIR=<scratch>/gsd-core-1.22.0/node_modules/@opengsd/gsd-core/gsd-core MEMANTO_SPIKE_INSTALLER=1 npm test
+                                                        # tests 188 / # pass 188 / # fail 0, exit 0
+```
+
+### Install record (real home, D-08, D-14)
+
+`~/.gsd/capabilities` was empty beforehand, so this was a fresh install rather than the reinstall path.
+
+```
+$ node tools/stage-bundle.cjs --real --json
+{"stagedDir":"<tmp>/memanto-stage-NU99B3/memanto","home":null,"install":{"status":"installed","id":"memanto","version":"0.0.0","scope":"global","disclosure":[... "memanto -> memanto.cjs [router: route]" ...]}}   exit 0
+
+~/.gsd-capabilities.json  entries.memanto = {"id":"memanto","version":"0.0.0","source":"<tmp>/memanto-stage-NU99B3/memanto","integrity":"","files":[".gsd/capabilities/memanto"],"sharedEdits":[]}
+
+$ gsd_run capability list --raw      (memanto entry)
+{"id":"memanto","role":"feature","version":"0.0.0","tier":"full","scope":"global","status":"active","reason":null,"surfaced":true}
+```
+
+Installed files: `capability.json`, `LICENSE`, `README.md`, `memanto.cjs`, `package.json`, `lib/{checks,config,gsd-host,health}.cjs`, `scripts/{check-probe,gate}.cjs`. `~/.gsd/consent.json` was not written. Its sha256 is `b47015437185...fdc0`, 754 B, the same before and after, because a global install needs no consent record (F2). D-08 expected a consent write, and none happened.
+
+Host note: the `gsd-tools` on PATH (`/opt/homebrew/bin/gsd-tools`) is gsd-core **1.17.0**, below `engines.gsd >=1.20.1`. Every host command here used `gsd_run` (`~/.claude/gsd-core`, 1.20.1), which is also what the headless sessions resolve. README's `gsd-tools ...` commands will run against 1.17.0 on this machine.
+
+### Throwaway project and command
+
+`<scratch>/acc0109/proj`: `git init`, one commit of `.planning/{PROJECT,REQUIREMENTS,ROADMAP,STATE}.md` and `phases/01-core-counter/` (neutral "Tally" project), `workflow.discuss_mode: "discuss"`. Between runs only `.planning/config.json` was rewritten. The agent id for the healthy configs was `memanto-dev` (MEMANTO_TEST_AGENT unset), and it was written only into this throwaway config.
+
+Command (the Q1 shape with the real home: GSD_HOME is not set, and there is no skip-permissions flag):
+
+```
+GSD_WORKSTREAM= GSD_PROJECT= claude -p "/gsd-discuss-phase 1 --auto" --allowedTools "Bash,Read,Write,Edit,Glob,Grep,Skill" --permission-mode dontAsk --output-format stream-json --verbose --no-session-persistence --max-budget-usd 5 > transcript-<run>.jsonl
+```
+
+### Trimmed transcript lines
+
+```
+a  render-hooks discuss:pre (host, before the run): [{"capId":"memanto","kind":"gate","blocking":true,"onError":"halt"}]
+a  #9 CALL Bash: P='d="${GSD_HOME:-$HOME}/.gsd/capabilities/memanto"; ...; exec node "$d/scripts/gate.cjs"'; ( perl -e 'alarm 20; exec @ARGV' sh -c "$P" ); echo "EXIT=$?"
+      RESULT: memanto: BLOCKED [agent-id] memanto.agent_id is empty -> gsd_run config-set memanto.agent_id <agent-id> (memanto.enabled=false disables Memanto for this project) EXIT=1
+   FINAL (12 turns, 37 s, USD 0.69): Phase 1 discussion did not run. A blocking check that runs before the discussion stopped it, so the agent created no CONTEXT.md, made no commits ...
+b  #6 CALL Bash: ...; d="${GSD_HOME:-$HOME}/.gsd/capabilities/memanto"; ...; timeout 20 node "$d/scripts/gate.cjs"; echo "EXIT=$?"
+      RESULT: memanto: BLOCKED [api-health] http://127.0.0.1:9/health is not healthy (connection) -> bring the Memanto REST API at http://127.0.0.1:9 up (the capability never starts it), then check: curl -fsS http://127.0.0.1:9/health (memanto.enabled=false disables Memanto for this project) EXIT=1
+   FINAL (7 turns, 32 s, USD 0.63): The phase 1 discussion stopped before any work began. The Memanto gate ... failed
+e  render-hooks discuss:pre with {"memanto":{"enabled":false}}: activeHooks=[] (0 memanto entries)
+```
+
+F10 caveat re-observed: in both runs the LLM ran the predicate command itself, never `gsd_run check predicate`. In run (a) it read `scripts/gate.cjs` (`cat | head -80`) before running it, and in both runs it still ran it.
+
+### Verdicts
+
+| Run | Config | Expected | Observed | Verdict |
+|-----|--------|----------|----------|---------|
+| a | enabled, agent_id "", real URLs | halt `[agent-id]`, no CONTEXT.md (CONF-02) | halt `[agent-id]` only; `phases/01-core-counter/` holds only `.gitkeep`; `git log` = `init tally project` | pass |
+| b | agent set, api_url `http://127.0.0.1:9` | halt `[api-health]` (CONF-03) | halt `[api-health]` only; no CONTEXT.md, no commit | pass |
+| c | as b, real api_url, mempalace.enabled true | halt `[mempalace]` naming both (GATE-03) | not run: permission classifier denied the command | blocked |
+| d | enabled, agent set, both real URLs | gate passes, discuss continues (SC2) | not run: permission classifier denied the command | blocked |
+| e | memanto.enabled false | no memanto render entry, no gate in transcript (CONF-01) | render: 0 memanto entries; headless half not run (classifier) | partial |
+
+### Doctor (GATE-06, real install)
+
+| Project config | `gsd_run memanto doctor` | `node "$HOME/.gsd/capabilities/memanto/memanto.cjs" doctor` | Verdict |
+|----------------|--------------------------|--------------------------------------------------------------|---------|
+| d (healthy) | exit 0, `0 error(s), 1 warning(s)` | exit 0 (and `--raw` exit 0) | pass |
+| a (agent_id "") | exit 1, `error agent-id  memanto.agent_id is empty` | exit 1, same line | pass |
+
+Healthy doctor lines (direct form): `ok gsd-core-located` (1.20.1), `ok enabled`, `ok loaded` (memanto 0.0.0 active, global), `ok consent` (global scope needs no consent record), `ok engines`, `ok render:discuss:pre`, `ok duplicate-install`, `warn discuss-bypass`, `ok mempalace`, `ok agent-id`, `ok backend-url`, `ok api-url`, `ok backend-health`, `ok api-health`.
+
+### gsd-core snapshot and real-Memanto reads (INST-01, T-01-29, T-01-30)
+
+- `~/.claude/gsd-core/{bin,workflows,references}`: 627 files, aggregate sha256 `80873022e03ac60fd1ea5e4a0a14a4925210cb4fb6b13c3dc004dd1c1b8a789e`, the same before the suite gates and after the doctor runs. The two per-file lists (path, size, sha256) are byte-identical (`cmp`).
+- `~/.claude/settings.json` sha256 `2ff82ae1...a38a7`, 22112 B, the same before and after.
+- No `memanto` CLI command appears in either transcript. Real Memanto received only `GET /health`: from the gate in run (a) (backend and API), from run (b) (backend only), and from doctor.
+- Writes under the real `~/.claude`: one project dir `~/.claude/projects/-private-tmp-...-acc0109-proj/`. Run (a) also wrote a transient `tool-results/*.txt` (persisted large output of `cat discuss-phase.md`), which was gone after the session ended (`find -type f` returns nothing). The directory is left in place.
+
+### Blocked runs (owner decision needed)
+
+The Claude Code auto-mode classifier denied three commands as "Destructive or Unwanted Actions". The agent did not retry any of them or work around them:
+1. Headless run (c) (`mempalace.enabled: true`). A read-only check afterwards found the likely reason: with MemPalace enabled, gsd-core renders a first-party `discuss:pre` **contribution** (`capability-registry.cjs` mempalace entry) that tells the headless agent to run `mempalace wake-up --wing <wing>` and `mempalace search ...`. `mempalace` is not on PATH and `~/.mempalace` does not exist, so the calls would fail, and the contribution says to continue. Even so, the run asks an LLM to touch a second memory system that the plan never mentioned.
+2. Headless run (d) (healthy). If it ran, the gate would pass and `/gsd-discuss-phase --auto` would continue inside the throwaway project. That means writing and committing CONTEXT.md there, under `--permission-mode dontAsk`.
+3. A host-layer `gsd_run check predicate` for config (d). It was meant only as supplementary evidence, and the agent dropped it after the denial.
+
+Published package: pending (Task 3).
