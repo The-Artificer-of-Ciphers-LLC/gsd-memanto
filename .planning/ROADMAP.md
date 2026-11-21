@@ -33,7 +33,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. `gsd_run memanto doctor` reports four cases as errors: the capability is enabled in config but not loaded, it is not consented, it is outside `engines.gsd`, or it does not render at a declared point.
   4. `node --test` validates the manifest through gsd-core's real validator and loader on a temporary `GSD_HOME` and renders hooks through the real `loop render-hooks`. It fails if any hook sits at an undispatched (point, kind) pair or trips a loader trap: `MEMORY-RECALL.md`, non-host `consumes`, an invalid `into` role, `when` on an undeclared key, or a reserved prefix. It also exercises the gate against a fake `memanto` CLI and a fake REST server.
   5. The spike outcomes are recorded, and the bundle reflects them. They answer three questions: whether a gate halts a real run at `discuss:pre` and `ship:pre` (including headless), whether a `ref.command` step dispatches the third-party `memanto` command family on gsd-core 1.20.1, and whether global-scope skills are staged.
-**Plans:** 5/9 plans executed
+**Plans:** 8/9 plans executed
 
 Plans:
 **Wave 1**
@@ -46,9 +46,9 @@ Plans:
 - [x] 01-05-PLAN.md — Spike Q1/Q2 (live headless discuss:pre and ship:pre halts, ref.command dispatch) with regression tests and the D-09 fallback
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 01-06-PLAN.md — memanto doctor (four fail-open errors, gate checks, both invocation forms) and bundle hygiene tests
-- [ ] 01-07-PLAN.md — Spike Q3: owner-approved gsd-core installer run into a throwaway config dir; env-gated regression test
-- [ ] 01-08-PLAN.md — README, CHANGELOG, LICENSE, CI matrix (ubuntu/macOS x gsd-core 1.20.1/1.22.0), OIDC release workflow, owner check of the CI host package
+- [x] 01-06-PLAN.md — memanto doctor (four fail-open errors, gate checks, both invocation forms) and bundle hygiene tests
+- [x] 01-07-PLAN.md — Spike Q3: owner-approved gsd-core installer run into a throwaway config dir; env-gated regression test
+- [x] 01-08-PLAN.md — README, CHANGELOG, LICENSE, CI matrix (ubuntu/macOS x gsd-core 1.20.1/1.22.0), OIDC release workflow, owner check of the CI host package
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [ ] 01-09-PLAN.md — Headless acceptance on the real home, owner-run 0.1.0 release, re-check on the published package
@@ -147,7 +147,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Walking Skeleton | 5/9 | In Progress | - |
+| 1. Walking Skeleton | 8/9 | In Progress | - |
 | 2. Verified Identity at Every Gate | 0/TBD | Not started | - |
 | 3. Memory-Informed Discuss and Plan | 0/TBD | Not started | - |
 | 4. Decisions Remembered, Conflicts Resolved | 0/TBD | Not started | - |
