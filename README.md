@@ -9,6 +9,13 @@ Commands below use `gsd-tools`, gsd-core's CLI. GSD workflows and the gate's own
 ## Prerequisites
 
 - **gsd-core** `>=1.20.1 <2.0.0`. The manifest's `engines.gsd` range is a hard gate, so gsd-core does not load the capability outside it.
+- **The `gsd-tools` you run must itself be `>=1.20.1`.** A machine can have more than one gsd-core. For example, an older global npm install can sit on `PATH` while the runtime uses `~/.claude/gsd-core`. Check before installing:
+
+  ```sh
+  gsd-tools query runtime-identity --raw    # prints {"packageName":"@opengsd/gsd-core","version":"<x.y.z>"}; needs >=1.20.1
+  ```
+
+  `gsd-tools` accepts no `--version` flag. If the version is older, run the commands below through the runtime's own copy instead: `gsd_run` (for example `~/.claude/gsd-core/bin/gsd_run capability install ...`) or `node ~/.claude/gsd-core/bin/gsd-tools.cjs ...`.
 - **Node.js** `>=24`.
 - **A running Memanto backend and REST API.** Both must already be running, configured and healthy. The capability only connects to them. It never starts, stops or reconfigures either one.
 - **A Memanto agent you created** for the project, for example with `memanto agent create <agent-id> --pattern project`. The capability never creates agents and ships no default agent id.
