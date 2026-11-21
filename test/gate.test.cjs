@@ -5,16 +5,25 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const env = require('./helpers/gsd-env.cjs');
+const { startFakeApi } = require('./helpers/fake-api.cjs');
+const { installFakeMemanto } = require('./helpers/fake-memanto.cjs');
+const checks = require('../lib/checks.cjs');
 
 const BREAK_GLASS = '(memanto.enabled=false disables Memanto for this project)';
 const PHASE_DIR = '.planning/phases/01-test';
 const PREFIX = 'command exited 1: ';
+const servers = {};
 
 let home;
 let project;
 let predicate;
+let fakeCli;
 
-before(() => {
+before(async () => {
+  for (const mode of ['ok', 'ok-extra', 'http-500', 'hang', 'closed']) {
+    servers[mode] = await startFakeApi({ mode });
+  }
+  fakeCli = installFakeMemanto();
   home = env.tmpDir('memanto-home-');
   project = env.makeProject({ config: { memanto: { enabled: true, agent_id: '' } }, phaseDirs: ['01-test'] });
   env.installBundle({ home });
@@ -23,12 +32,22 @@ before(() => {
   predicate = hooks[0].check.predicate;
 });
 
-after(() => env.cleanup());
+after(async () => {
+  for (const s of Object.values(servers)) await s.close();
+  env.cleanup();
+});
 
 // Base config for a case: memanto enabled, everything else from `memanto`/`extra`.
+// Every gate run has the fake memanto first on PATH (TEST-02).
 function runGate({ memanto = {}, extra = {} } = {}) {
   env.writeConfig(project, { memanto: { enabled: true, ...memanto }, ...extra });
-  const res = env.checkPredicate(predicate, { cwd: project, home, phaseDir: PHASE_DIR, phaseNumber: '01' });
+  const res = env.checkPredicate(predicate, {
+    cwd: project,
+    home,
+    phaseDir: PHASE_DIR,
+    phaseNumber: '01',
+    env: { PATH: fakeCli.pathEnv, FAKE_MEMANTO_LOG: fakeCli.logPath },
+  });
   assert.equal(res.status, 0, `check predicate CLI should exit 0, stderr: ${res.stderr}`);
   const message = res.json.message || '';
   const body = message.startsWith(PREFIX) ? message.slice(PREFIX.length) : message;
@@ -105,9 +124,89 @@ test('memanto.agent_id with leading or trailing whitespace blocks and never echo
 
 // --- D-04: every check evaluated, fixed order, break-glass last ---
 
-test('mempalace true plus empty agent_id prints [mempalace] then [agent-id], break-glass last', () => {
-  const r = runGate({ memanto: { agent_id: '' }, extra: { mempalace: { enabled: true } } });
+test('mempalace true plus empty agent_id prints exactly [mempalace] then [agent-id], break-glass last', () => {
+  const r = runGate({
+    memanto: { agent_id: '', backend_url: servers.ok.url, api_url: servers.ok.url },
+    extra: { mempalace: { enabled: true } },
+  });
   assert.equal(r.block, true);
-  assert.deepEqual(r.ids.slice(0, 2), ['mempalace', 'agent-id'], r.message);
+  assert.deepEqual(r.ids, ['mempalace', 'agent-id'], r.message);
+  assert.equal(r.lines.length, 3, r.message);
   assert.equal(r.lines.at(-1), BREAK_GLASS);
+});
+
+test('agent_id set, both endpoints healthy and mempalace not true: the gate passes', () => {
+  const r = runGate({
+    memanto: { agent_id: 'gate-agent', backend_url: servers.ok.url, api_url: servers.ok.url },
+    extra: { mempalace: { enabled: false } },
+  });
+  assert.equal(r.block, false, r.message);
+});
+
+// --- D-04 budget: the host keeps the HEAD 2000 characters, so break-glass must survive ---
+
+function longUrl(base) {
+  return base.replace('http://', 'http://user:pass@') + '/' + 'x'.repeat(5000);
+}
+
+test('every check failing with 5000-character userinfo URLs fits the 2000-character clip, break-glass last', () => {
+  const r = runGate({
+    memanto: { agent_id: '', backend_url: longUrl(servers.closed.url), api_url: longUrl(servers.closed.url) },
+    extra: { mempalace: { enabled: true } },
+  });
+  assert.equal(r.block, true);
+  assert.deepEqual(r.ids, ['mempalace', 'agent-id', 'backend-health', 'api-health'], r.message);
+  assert.ok(r.message.length <= 2000, `message length ${r.message.length}`);
+  assert.equal(r.message.trimEnd().split('\n').at(-1), BREAK_GLASS);
+  assert.ok(!r.message.includes('user:pass@'), 'userinfo leaked');
+  for (const line of r.blocked) assert.ok(line.length <= 250, `line length ${line.length}: ${line}`);
+});
+
+test('renderGateFailures keeps every line at most 250 characters and the total at most 1900', () => {
+  const huge = 'v'.repeat(5000);
+  const records = checks.CHECK_ORDER.map((id) => ({ id, status: 'error', message: huge, fix: huge }));
+  const text = checks.renderGateFailures(records);
+  const lines = text.split('\n');
+  assert.equal(lines.length, checks.CHECK_ORDER.length + 1);
+  for (const line of lines) assert.ok(line.length <= 250, `line length ${line.length}`);
+  assert.ok(text.length <= 1900, `total ${text.length}`);
+  assert.equal(lines.at(-1), checks.BREAK_GLASS);
+});
+
+test('a hanging backend costs one 5 s probe: verdict in under 8 s, only [backend-health], one request each', () => {
+  const hangBefore = servers.hang.requests.length;
+  const okBefore = servers['ok-extra'].requests.length;
+  const started = Date.now();
+  const r = runGate({ memanto: { agent_id: 'gate-agent', backend_url: servers.hang.url, api_url: servers['ok-extra'].url } });
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 8000, `took ${elapsed} ms`);
+  assert.deepEqual(r.ids, ['backend-health'], r.message);
+  assert.ok(r.blocked[0].includes('is not healthy (timeout)'), r.message);
+  assert.deepEqual(servers.hang.requests.slice(hangBefore), [{ method: 'GET', url: '/health' }]);
+  assert.deepEqual(servers['ok-extra'].requests.slice(okBefore), [{ method: 'GET', url: '/health' }]);
+});
+
+test('health response bodies never reach the gate message', () => {
+  const r = runGate({ memanto: { agent_id: '', backend_url: servers['ok-extra'].url, api_url: servers['http-500'].url } });
+  assert.equal(r.block, true);
+  assert.deepEqual(r.ids, ['agent-id', 'api-health'], r.message);
+  for (const secret of ['secret-model', 'secret-provider', '"status"']) {
+    assert.ok(!r.message.includes(secret), `${secret} leaked: ${r.message}`);
+  }
+});
+
+// --- TEST-02: no memanto process is spawned by the gate in Phase 1 ---
+
+test('the fake memanto double records invocations (so zero calls below is meaningful)', () => {
+  const probe = installFakeMemanto();
+  const res = require('node:child_process').spawnSync('memanto', ['--version'], {
+    env: { ...process.env, PATH: probe.pathEnv, FAKE_MEMANTO_LOG: probe.logPath, FAKE_MEMANTO_EXIT: '3' },
+    encoding: 'utf8',
+  });
+  assert.equal(res.status, 3);
+  assert.deepEqual(probe.calls(), [['--version']]);
+});
+
+test('no gate run in this file spawned the memanto CLI', () => {
+  assert.equal(fakeCli.calls().length, 0, JSON.stringify(fakeCli.calls()));
 });
