@@ -133,3 +133,158 @@ test('an unknown subcommand exits 1 with a usage message naming doctor', () => {
   assert.equal(res.status, 1, `${res.stdout}${res.stderr}`);
   assert.match(res.stdout + res.stderr, /doctor/);
 });
+
+// --- Task 2: the four fail-open states (D-21, OD-3), duplicates, discuss bypass ---
+
+function projectInstall(project, h) {
+  const res = spawnSync(
+    process.execPath,
+    [path.join(env.REPO_ROOT, 'tools', 'stage-bundle.cjs'), '--scope', 'project', '--project', project, '--home', h, '--json'],
+    { cwd: env.REPO_ROOT, encoding: 'utf8', env: { ...process.env, GSD_WORKSTREAM: '', GSD_PROJECT: '' } },
+  );
+  assert.equal(res.status, 0, `${res.stdout}${res.stderr}`);
+  assert.equal(JSON.parse(res.stdout).install.status, 'installed', res.stdout);
+  return path.join(project, '.gsd', 'capabilities', 'memanto');
+}
+
+function editInstalledManifest(h, edit) {
+  const file = path.join(globalBundle(h), 'capability.json');
+  const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+  edit(manifest);
+  fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + '\n');
+}
+
+function hostVersion() {
+  const res = env.gsd(['runtime-identity', '--raw'], { home: env.tmpDir('memanto-home-') });
+  return JSON.parse(res.stdout).version;
+}
+
+test('enabled with no bundle installed in the temp home: loaded is an error and doctor exits 1', () => {
+  const h = env.tmpDir('memanto-home-');
+  const project = env.makeProject({ config: healthyConfig() });
+  const res = direct(project, { h, bundle: env.REPO_ROOT });
+  assert.equal(res.status, 1, `${res.stdout}${res.stderr}`);
+  const r = rec(report(res), 'loaded');
+  assert.ok(r, res.stdout);
+  assert.equal(r.status, 'error', JSON.stringify(r));
+  assert.ok(r.fix.includes('capability install'), r.fix);
+  assert.ok(!r.fix.includes('config-set'), r.fix);
+});
+
+test('project-scope install then capability trust revoke: consent is an error naming the missing consent record', () => {
+  const h = env.tmpDir('memanto-home-');
+  const project = env.makeProject({ config: healthyConfig() });
+  const bundle = projectInstall(project, h);
+  const revoked = env.gsd(['capability', 'trust', 'revoke', 'memanto'], { cwd: project, home: h });
+  assert.equal(revoked.status, 0, revoked.stderr);
+  const res = direct(project, { h, bundle });
+  assert.equal(res.status, 1, `${res.stdout}${res.stderr}`);
+  const rep = report(res);
+  const consent = rec(rep, 'consent');
+  assert.ok(consent, res.stdout);
+  assert.equal(consent.status, 'error', JSON.stringify(consent));
+  assert.match(consent.message, /consent record/);
+  assert.equal(rec(rep, 'loaded').status, 'error');
+});
+
+test('a hand-copied global bundle with no ledger entry: consent error naming the ledger, gsd_run answers Unknown command', () => {
+  const h = env.tmpDir('memanto-home-');
+  fs.cpSync(env.stageBundle(), globalBundle(h), { recursive: true });
+  const project = env.makeProject({ config: healthyConfig() });
+  const routed = viaGsd(project, { h });
+  assert.match(routed.stdout + routed.stderr, /Unknown command/);
+  const res = direct(project, { h });
+  assert.equal(res.status, 1, `${res.stdout}${res.stderr}`);
+  const consent = rec(report(res), 'consent');
+  assert.equal(consent.status, 'error', JSON.stringify(consent));
+  assert.match(consent.message, /ledger/);
+});
+
+test('an installed manifest edited to engines.gsd ">=9.0.0": engines error naming the host version and the range', () => {
+  const h = env.tmpDir('memanto-home-');
+  env.installBundle({ home: h });
+  editInstalledManifest(h, (m) => {
+    m.engines.gsd = '>=9.0.0';
+  });
+  const project = env.makeProject({ config: healthyConfig() });
+  const res = direct(project, { h });
+  assert.equal(res.status, 1, `${res.stdout}${res.stderr}`);
+  const engines = rec(report(res), 'engines');
+  assert.equal(engines.status, 'error', JSON.stringify(engines));
+  assert.ok(engines.message.includes(hostVersion()), engines.message);
+  assert.ok(engines.message.includes('>=9.0.0'), engines.message);
+});
+
+test('an installed manifest with a gate when on an undeclared key: render:discuss:pre error with the host reason', () => {
+  const h = env.tmpDir('memanto-home-');
+  env.installBundle({ home: h });
+  editInstalledManifest(h, (m) => {
+    m.gates[0].when = 'memanto.nope';
+  });
+  const project = env.makeProject({ config: healthyConfig() });
+  const res = direct(project, { h });
+  assert.equal(res.status, 1, `${res.stdout}${res.stderr}`);
+  const render = rec(report(res), 'render:discuss:pre');
+  assert.ok(render, res.stdout);
+  assert.equal(render.status, 'error', JSON.stringify(render));
+  assert.ok(render.message.includes('memanto.nope'), render.message);
+  assert.ok(render.message.length <= 450, `message length ${render.message.length}`);
+});
+
+test('bundles installed in both global and project scope: duplicate-install is a warning', () => {
+  const h = env.tmpDir('memanto-home-');
+  const project = env.makeProject({ config: healthyConfig() });
+  env.installBundle({ home: h });
+  projectInstall(project, h);
+  const res = viaGsd(project, { h });
+  const dup = rec(report(res), 'duplicate-install');
+  assert.ok(dup, res.stdout);
+  assert.equal(dup.status, 'warn', JSON.stringify(dup));
+});
+
+test('workflow.discuss_mode "assumptions": discuss-bypass warns naming discuss_mode', () => {
+  const project = env.makeProject({ config: healthyConfig({ workflow: { discuss_mode: 'assumptions' } }) });
+  const res = viaGsd(project);
+  const r = rec(report(res), 'discuss-bypass');
+  assert.ok(r, res.stdout);
+  assert.equal(r.status, 'warn', JSON.stringify(r));
+  assert.match(r.message, /discuss_mode/);
+});
+
+test('default discuss mode: discuss-bypass warns naming --power and --assumptions, and a warn-only report exits 0', () => {
+  const project = env.makeProject({ config: healthyConfig() });
+  const res = viaGsd(project);
+  assert.equal(res.status, 0, `${res.stdout}${res.stderr}`);
+  const rep = report(res);
+  const r = rec(rep, 'discuss-bypass');
+  assert.ok(r, res.stdout);
+  assert.equal(r.status, 'warn', JSON.stringify(r));
+  assert.ok(r.message.includes('--power') && r.message.includes('--assumptions'), r.message);
+  for (const id of ['gsd-core-located', 'enabled', 'loaded', 'consent', 'engines', 'render:discuss:pre', 'duplicate-install']) {
+    assert.equal(rec(rep, id) && rec(rep, id).status, 'ok', `${id}: ${JSON.stringify(rec(rep, id))}`);
+  }
+});
+
+test('no reachable gsd-tools: gsd-core-located is an error and config and gate checks are still reported', () => {
+  const empty = env.tmpDir('memanto-nocore-');
+  const project = env.makeProject({ config: healthyConfig() });
+  const res = direct(project, {
+    extraEnv: { GSD_CORE_DIR: empty, CLAUDE_CONFIG_DIR: empty, OPENCODE_CONFIG_DIR: empty },
+  });
+  assert.equal(res.status, 1, `${res.stdout}${res.stderr}`);
+  const rep = report(res);
+  assert.ok(rec(rep, 'gsd-core-located'), res.stdout);
+  assert.equal(rec(rep, 'gsd-core-located').status, 'error');
+  assert.equal(rec(rep, 'enabled').status, 'ok');
+  assert.equal(rec(rep, 'agent-id').status, 'ok');
+  assert.equal(rec(rep, 'api-health').status, 'ok');
+});
+
+test('memanto.enabled not true: enabled warns and the loaded, render and gate checks are skipped', () => {
+  const project = env.makeProject({ config: { memanto: { enabled: false } } });
+  const res = viaGsd(project, { raw: true });
+  const rep = report(res);
+  assert.ok(rec(rep, 'enabled'), res.stdout);
+  assert.equal(rec(rep, 'enabled').status, 'warn');
+  for (const id of ['loaded', 'render:discuss:pre', 'agent-id']) assert.equal(rec(rep, id), undefined, id);
+});
