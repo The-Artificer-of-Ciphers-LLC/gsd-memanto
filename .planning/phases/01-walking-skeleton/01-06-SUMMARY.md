@@ -232,6 +232,24 @@ None - no external service configuration required.
 - Plan verification: `node --test --test-reporter=tap test/doctor.test.cjs test/bundle.test.cjs` exit 0 (20/20). `npm test` exit 0 (172 tests, 0 fail).
 - Acceptance: commands-entry check exit 0, `route` export check exit 0, gsd-host exports check exit 0. doctor.test.cjs runs `capability trust revoke` and edits engines to `>=9.0.0`. bundle.test.cjs uses `Promise.all` for the concurrent run.
 
+## Post-merge owner fixes
+
+Applied after the 01-06 merge as an orchestrator-dispatched gap fix (no PLAN.md). Both decisions were made by the owner in the orchestrator session on 2026-11-20. The work was done test-first (`workflow.tdd_mode=true`). Base `28c37fe`. Four commits: `09ba994`, `377ae49`, `a62992b`, `6d5946c`.
+
+**1. Resolves Deviation 2: the check-probe spawn is now time-bounded.**
+- The owner typed the hook's confirmation phrase for `PROBE_TIMEOUT_MS = 15000`. The timeout-guard hook allowed the write, so no bypass was needed and the constant was written as named.
+- `memanto.cjs` `gateChecks(cwd, { probe, timeoutMs })` passes `timeout: PROBE_TIMEOUT_MS` (15000 ms) to the check-probe `spawnSync`. On `ETIMEDOUT` it returns one `check-probe` error, "check probe timed out after <ms> ms and was stopped (<signal>)...", with a fix line saying the config files must be regular readable files. A hang, such as a FIFO config file, now ends in a reported error, not a hung doctor. `probe` and `timeoutMs` can be injected only so tests run fast. `gateChecks` and `PROBE_TIMEOUT_MS` are exported next to `route`.
+- RED `09ba994`: two new cases in `test/doctor.test.cjs` failed on their own assertions (`PROBE_TIMEOUT_MS` was undefined, and `gateChecks` was not exported). The other 15 cases passed. The classifier returned `RED_EVIDENCE_OK` (target_test_failed, tap). Record: `evidence/01-06-fix1-red.json`. GREEN `377ae49`: doctor and bundle tests pass 22/22. The never-exiting probe stand-in returns in about 300 ms.
+
+**2. Resolves the `repo-planted-host-binary` threat flag: user config homes are searched before the project.**
+- New `lib/gsd-host.cjs` `candidates` order: `GSD_CORE_DIR` (still wins outright when set), then the running gsd-tools under `gsd_run`, then `${CLAUDE_CONFIG_DIR:-~/.claude}/gsd-core/bin`, then `${OPENCODE_CONFIG_DIR:-~/.config/opencode}/gsd-core/bin`, and only then `<project>/gsd-core/bin` and `<project>/.claude/gsd-core/bin`.
+- **This deliberately departs from RESEARCH Pattern 5 and from gsd-core's own `gsd_run` resolver order**, both of which search the project first. The owner chose this so that a cloned repo cannot plant a `gsd-tools.cjs` that doctor would run ahead of the user's own install. Project-local candidates are still used as a fallback when no config home has gsd-core. The running gsd-tools keeps second place because, under `gsd_run`, it is the host that is already executing.
+- RED `a62992b`: new `test/gsd-host.test.cjs` has 4 cases. Each runs `locateGsdTools` in a child process with a temp HOME, and the temp HOME and project dirs each hold a `gsd-tools.cjs` identity stub. The target case and the opencode case failed on the version assertion: the stub at `<project>/gsd-core` (`project-root`) was chosen first. The `GSD_CORE_DIR`-wins case and the fallback case passed. The classifier returned `RED_EVIDENCE_OK`. Record: `evidence/01-06-fix2-red.json`. GREEN `6d5946c`: 4/4 pass.
+
+**Verification:** `npm test` passes 188 tests: 187 pass, 0 fail, 1 skipped (182 before the fixes, plus 2 doctor cases and 4 gsd-host cases). STATE.md and ROADMAP.md were not changed, as the dispatch required. The README has no locate-order or probe-bound text to update.
+
+**Open owner decisions from this plan:** none remain.
+
 ---
 *Phase: 01-walking-skeleton*
 *Completed: 2026-11-21*

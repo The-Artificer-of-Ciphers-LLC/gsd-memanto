@@ -288,3 +288,28 @@ test('memanto.enabled not true: enabled warns and the loaded, render and gate ch
   assert.equal(rec(rep, 'enabled').status, 'warn');
   for (const id of ['loaded', 'render:discuss:pre', 'agent-id']) assert.equal(rec(rep, id), undefined, id);
 });
+
+// --- Post-merge owner fix 1: the check-probe spawn is time-bounded ---
+
+test('PROBE_TIMEOUT_MS bounds the check-probe spawn at 15000 ms', () => {
+  const doctor = require('../memanto.cjs');
+  assert.equal(doctor.PROBE_TIMEOUT_MS, 15000);
+});
+
+test('a check probe that never exits yields a check-probe error with a timeout reason instead of hanging doctor', () => {
+  const doctor = require('../memanto.cjs');
+  assert.equal(typeof doctor.gateChecks, 'function', 'memanto.cjs does not export gateChecks(cwd, { probe, timeoutMs })');
+  const dir = env.tmpDir('memanto-hang-');
+  const probe = path.join(dir, 'hang-probe.cjs');
+  fs.writeFileSync(probe, 'setInterval(() => {}, 1000);\n');
+  const started = Date.now();
+  const checks = doctor.gateChecks(dir, { probe, timeoutMs: 300 });
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 10000, `gateChecks took ${elapsed} ms`);
+  assert.equal(checks.length, 1, JSON.stringify(checks));
+  const [r] = checks;
+  assert.equal(r.id, 'check-probe');
+  assert.equal(r.status, 'error');
+  assert.match(r.message, /timed out after 300 ms/);
+  assert.ok(r.fix.length > 0, 'check-probe timeout has no fix hint');
+});
