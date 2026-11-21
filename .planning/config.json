@@ -79,5 +79,5 @@
     "auto_update": true,
     "enabled": true
   },
-  "runtime": "opencode"
+  "runtime": "claude"
 }
