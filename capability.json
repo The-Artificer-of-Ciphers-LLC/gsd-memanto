@@ -1,0 +1,62 @@
+{
+  "id": "memanto",
+  "role": "feature",
+  "version": "0.0.0",
+  "title": "Memanto memory",
+  "description": "Memanto-backed project memory for the GSD lifecycle. Fails closed: a blocking gate halts the workflow when the configured Memanto agent or endpoints are not healthy.",
+  "tier": "full",
+  "requires": [],
+  "engines": {
+    "gsd": ">=1.20.1 <2.0.0"
+  },
+  "runtimeCompat": {
+    "supported": ["*"],
+    "unsupported": []
+  },
+  "author": "The Artificer of Ciphers LLC",
+  "license": "MIT",
+  "repository": "https://github.com/The-Artificer-of-Ciphers-LLC/gsd-memanto",
+  "homepage": "https://github.com/The-Artificer-of-Ciphers-LLC/gsd-memanto#readme",
+  "keywords": ["memory", "memanto"],
+  "skills": [],
+  "agents": [],
+  "config": {
+    "memanto.enabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "Enables the Memanto capability for this project; only the boolean true activates it."
+    },
+    "memanto.agent_id": {
+      "type": "string",
+      "default": "",
+      "description": "The Memanto agent id this project reads and writes; it must be set explicitly, and an empty value blocks every gate."
+    },
+    "memanto.backend_url": {
+      "type": "string",
+      "default": "",
+      "description": "Full URL with scheme of the pre-running Memanto backend; an empty value blocks every gate."
+    },
+    "memanto.api_url": {
+      "type": "string",
+      "default": "",
+      "description": "Full URL with scheme of the pre-running Memanto REST API; an empty value blocks every gate."
+    }
+  },
+  "activationKey": "memanto.enabled",
+  "steps": [],
+  "contributions": [],
+  "gates": [
+    {
+      "point": "discuss:pre",
+      "check": {
+        "predicate": {
+          "kind": "command-exit-zero",
+          "timeout": 20,
+          "command": "d=\"${GSD_HOME:-$HOME}/.gsd/capabilities/memanto\"; [ -f \"$d/scripts/gate.cjs\" ] || d=\".gsd/capabilities/memanto\"; exec node \"$d/scripts/gate.cjs\""
+        }
+      },
+      "blocking": true,
+      "onError": "halt"
+    }
+  ]
+}
