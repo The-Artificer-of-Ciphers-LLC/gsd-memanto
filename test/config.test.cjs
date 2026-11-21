@@ -88,20 +88,26 @@ test('GSD_WORKSTREAM is trimmed like the host; whitespace only means no workstre
   assert.equal(resolved(cwd, { GSD_WORKSTREAM: '   ' }).get('memanto.agent_id'), '');
 });
 
-test('GSD_PROJECT=p reads .planning/p/config.json first, then the root config', () => {
+test('GSD_PROJECT=p reads .planning/p/config.json only; the root is not inherited (host #3963)', () => {
   const cwd = project();
-  write(cwd, '', { memanto: { agent_id: 'r', api_url: 'http://root.example' } });
+  write(cwd, '', { memanto: { agent_id: 'r', api_url: 'http://root.example', enabled: true } });
   write(cwd, 'p', { memanto: { agent_id: 'p' } });
   const res = resolved(cwd, { GSD_PROJECT: 'p' });
   assert.equal(res.get('memanto.agent_id'), 'p');
-  assert.equal(res.get('memanto.api_url'), 'http://root.example');
+  assert.equal(res.get('memanto.api_url'), '');
+  assert.equal(res.get('memanto.enabled'), false);
+  assert.deepEqual(res.files, [path.join(cwd, '.planning', 'p', 'config.json')]);
 });
 
-test('GSD_PROJECT and GSD_WORKSTREAM together read .planning/p/workstreams/w', () => {
+test('GSD_PROJECT and GSD_WORKSTREAM together read .planning/p/workstreams/w, then .planning, never .planning/p', () => {
   const cwd = project();
+  write(cwd, '', { memanto: { backend_url: 'http://root.example' } });
   write(cwd, 'p/workstreams/w', { memanto: { agent_id: 'pw' } });
-  write(cwd, 'p', { memanto: { agent_id: 'p-only' } });
-  assert.equal(resolved(cwd, { GSD_PROJECT: 'p', GSD_WORKSTREAM: 'w' }).get('memanto.agent_id'), 'pw');
+  write(cwd, 'p', { memanto: { agent_id: 'p-only', api_url: 'http://project.example' } });
+  const res = resolved(cwd, { GSD_PROJECT: 'p', GSD_WORKSTREAM: 'w' });
+  assert.equal(res.get('memanto.agent_id'), 'pw');
+  assert.equal(res.get('memanto.backend_url'), 'http://root.example');
+  assert.equal(res.get('memanto.api_url'), '');
 });
 
 test('planningDirs returns the root and the scoped directory', () => {
