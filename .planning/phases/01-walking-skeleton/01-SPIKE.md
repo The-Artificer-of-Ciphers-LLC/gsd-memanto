@@ -141,7 +141,7 @@ Bundle impact: none. Phase 1 ships no step; D-09 is not triggered.
 
 ## Q3 — Global-scope skills are staged
 
-Answer: PARTIAL (source level POSITIVE; installer/surface-apply run is plan 01-07, OD-2)
+Answer: POSITIVE (source level in 01-05; confirmed end to end by gsd-core's own `install.js` in plan 01-07, see "Q3 installer run" below)
 
 Evidence (temp capability `memanto` with `skills: ["memanto-probe"]` and `skills/memanto-probe/SKILL.md` (frontmatter `name: memanto-probe`), installed globally into a temp home; in-process with `process.env.GSD_HOME` set to that home):
 
@@ -153,7 +153,7 @@ Evidence (temp capability `memanto` with `skills: ["memanto-probe"]` and `skills
 
 `readInstalledCapabilitySkill(stem, registry)` (`bin/lib/install-profiles.cjs:727`) reads only `${GSD_HOME:-~}/.gsd/capabilities/<capId>/skills/<stem>/SKILL.md`, binds the stem to its declaring capId, and refuses symlinks. It is the reader `stageSkillsForRuntimeAsSkills` (`:867`) calls during the product installer / `applySurface`; it is not called by `capability install`. So a global install makes the skill reachable to the staging pass, and a project-scope install does not (path is under `$GSD_HOME`, not the project).
 
-Not run here (OD-2): the installer or surface re-apply that copies the skill into a runtime skills directory. Plan 01-07 runs it after an owner approval checkpoint and fills the section below.
+Plan 01-05 did not run the installer (OD-2). Plan 01-07 ran it after the owner approved the exact commands at a blocking-human checkpoint. Evidence is in the section below.
 
 Regression test: `Q3 source level: readInstalledCapabilitySkill reads a skill shipped in a global install`.
 
@@ -161,7 +161,45 @@ Bundle impact: none in Phase 1 (`skills: []`). Stems must not start with `gsd-`.
 
 ### Q3 installer run (plan 01-07)
 
-Pending: plan 01-07.
+Answer: POSITIVE. gsd-core's product installer copies a globally installed third-party capability's skill into the runtime config dir. It renames the stem with a `gsd-` prefix.
+
+Staged path (relative to `--config-dir`): `skills/gsd-memanto-probe/SKILL.md`. The file is byte-identical to the probe's `skills/memanto-probe/SKILL.md`. A sibling marker, `skills/gsd-memanto-probe/.gsd-capability-skill`, contains the declaring capId `memanto`. Both files are listed in the config dir's `gsd-file-manifest.json`.
+
+Approval: the owner chose "approve" at the 01-07 Task 1 checkpoint (OD-2, gate `blocking-human`), relayed by the orchestrator. Commands ran on 2026-11-21 (UTC) in this order, and nothing else ran. `S` is `<session scratchpad>/q3-0107`. The executor used a dedicated subfolder of the session scratchpad because sibling executors share the scratchpad root and an unrelated `home/` already existed there. All paths stay inside the scratchpad.
+
+1. `npm install --prefix "S/gsd-core-1.20.1" --no-audit --no-fund --ignore-scripts @opengsd/gsd-core@1.20.1` printed `added 106 packages in 2s` and exited 0. The installed `package.json` reads `@opengsd/gsd-core 1.20.1` and has no `postinstall`.
+2. The executor built the probe `S/probe/memanto`: `capability.json` with id `memanto`, role `feature`, `skills: ["memanto-probe"]`, empty steps, contributions, gates and config, and no hooks; plus `skills/memanto-probe/SKILL.md` with frontmatter `name: memanto-probe`. It then ran `GSD_HOME="S/home" node "S/gsd-core-1.20.1/node_modules/@opengsd/gsd-core/gsd-core/bin/gsd-tools.cjs" capability install "S/probe/memanto" --yes` from cwd `S`. Exit 0, `{"status":"installed","id":"memanto","version":"0.0.1","scope":"global", ...}`. The disclosure lists `skill: memanto-probe` as an instruction surface. The bundle landed at `S/home/.gsd/capabilities/memanto/`.
+3. `GSD_HOME="S/home" node "S/gsd-core-1.20.1/node_modules/@opengsd/gsd-core/bin/install.js" --claude --global --config-dir "S/claude-config"` (cwd `S`, stdin `/dev/null`) exited 0 with empty stderr. Trimmed stdout:
+
+```
+  GSD Core v1.20.1
+  Installing for Claude Code to <S>/claude-config
+  ✓ Installed workflow assets
+  ✓ Installed 73 skills to skills/
+  ↳ Agents installed via descriptor-driven layout (claude)
+  ✓ Wrote VERSION (1.20.1)
+  ✓ Installed hooks (bundled)
+[legacy-cleanup] Removed 0 legacy artifact(s).
+  ✓ Wrote file manifest (gsd-file-manifest.json)
+  ✓ Configured ... hook   (19 hook lines, all written to <S>/claude-config/settings.json)
+  ✓ Configured statusline
+  Done! Restart Claude Code, ...
+```
+
+4. Listing: `find S/claude-config -name SKILL.md` returns 73 files. 72 are first-party `skills/gsd-*/SKILL.md`. The 73rd is `skills/gsd-memanto-probe/SKILL.md`, the only match for `memanto` in the list.
+
+Real-home check (sha256 of file bytes; size and mtime from `stat`), taken immediately before and after step 3:
+
+| File | Before | After |
+|------|--------|-------|
+| `~/.claude/settings.json` | sha256 2ff82ae13f596bb2903136856e9ca0627b0fef52693dc0b1ec378707deef38a7, 22112 B, mtime 1795058407.349579369 | identical |
+| `~/.gsd/consent.json` | sha256 b47015437185a2580c20683e7ed89fae345ad02851ef298b16acd5867f78fdc0, 754 B, mtime 1794111955.273942186 | identical |
+
+The executor also scanned for files newer than a marker touched just before step 3: `$HOME` depth 1, `~/.claude` (excluding live session dirs), `~/.gsd`, `~/.config`, `~/.cache` and `~/.local/bin`. The only hits were `~/.hermes` gateway heartbeat/state files and `~/.claude/hooks/worktree-reap.log`. Both were written at 23:43:20-22 local time, about 23 s after the installer exited at 23:42:57, by the owner's already-running Hermes gateway and worktree-reap hook. Neither came from the installer. `~/.hermes`'s own gsd install files are dated 2026-11-19 and were not touched. The shell rc files are unchanged.
+
+Bundle impact: none in Phase 1 (`skills: []`). Phase 3 may ship skills only through a GLOBAL install followed by the product installer / surface re-apply. A project-scope install still stages nothing, because the reader only looks under `$GSD_HOME`. The runtime skill name is `gsd-<stem>`. For example, a stem `memanto-recall` would be invoked as `gsd-memanto-recall`, so stems must still not start with `gsd-`, or the result would be `gsd-gsd-...`.
+
+Regression test: `test/spike-installer.test.cjs`, test `Q3 installer: install.js --claude --global stages a global capability skill into the config dir`. It runs only with `MEMANTO_SPIKE_INSTALLER=1` and `GSD_CORE_DIR` set to an npm layout (`<prefix>/node_modules/@opengsd/gsd-core/gsd-core`). Otherwise it skips with the stated reason. A companion test, which always runs, pins this path in this section.
 
 ## D-07 exception (OD-1)
 
