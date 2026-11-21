@@ -130,14 +130,20 @@ node "${GSD_HOME:-$HOME}/.gsd/capabilities/memanto/memanto.cjs" doctor [--raw]
 
 Doctor prints one line per check with `ok`, `warn` or `error` and the next step to take. `--raw` prints JSON `{"checks":[{"id","status","message","fix"}]}`. Doctor exits non-zero when any check is `error`, and exits 0 when the worst result is `warn`.
 
-It reports the gate's own checks (agent id, MemPalace, URLs, health) and these four fail-open states, each as an `error`:
+It reports the gate's own checks (agent id, MemPalace, URLs, health) and these doctor checks:
 
-| Check id | Meaning |
-|----------|---------|
-| `loaded` | `memanto.enabled` is `true`, but gsd-core did not load the capability. |
-| `consent` | The installed bundle has no valid consent record, for example because its bytes changed after consent. |
-| `engines` | The installed gsd-core version is outside the manifest's `engines.gsd` range. |
-| `render:<point>` | The capability is loaded, but its hook does not render at the declared loop point, for example `render:discuss:pre`. |
+| Check id | Not-ok status | Meaning when not ok |
+|----------|---------------|---------------------|
+| `gsd-core-located` | `error` | No gsd-core `gsd-tools.cjs` was found. Set `GSD_CORE_DIR` to the gsd-core directory that holds `bin/gsd-tools.cjs`. |
+| `enabled` | `warn` | `memanto.enabled` is not `true` (or the config could not be read), so no Memanto hook runs in this project. Doctor still runs, because gsd-core routes the command family whether or not the capability is enabled. |
+| `loaded` | `error` | `memanto.enabled` is `true`, but gsd-core did not load the capability (fails open). |
+| `consent` | `error` | A project-scope install has no consent record (for example its bytes changed after consent), or a bundle on disk is in no capability ledger (copied by hand). |
+| `engines` | `error` | The installed gsd-core version is outside the manifest's `engines.gsd` range (fails open). |
+| `render:<point>` | `error` | No memanto hook renders at a declared loop point, for example `render:discuss:pre`. The host's load-failure reason is shown when it gives one. |
+| `duplicate-install` | `warn` | memanto is installed in both global and project scope; gsd-core keeps the global one. |
+| `discuss-bypass` | `warn` | Always reported: `/gsd-discuss-phase --power` and `--assumptions` (and `workflow.discuss_mode: "assumptions"`) skip the `discuss:pre` gate. |
+
+Doctor reports `check-probe`, `capability-list` or `doctor-internal` as an `error` only when doctor itself fails internally.
 
 ## Fail-open caveat
 
