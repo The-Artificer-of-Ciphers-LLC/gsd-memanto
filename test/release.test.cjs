@@ -59,6 +59,11 @@ test('README.md documents the break-glass switch and the direct doctor form', ()
   assert.ok(readme.includes('memanto.cjs" doctor'), 'direct doctor form missing');
 });
 
+test('.npmrc pins exact versions (save-exact=true)', () => {
+  const lines = read('.npmrc').split(/\r?\n/).map((l) => l.trim());
+  assert.ok(lines.includes('save-exact=true'), '.npmrc must contain save-exact=true');
+});
+
 test('LICENSE names The Artificer of Ciphers LLC', () => {
   assert.match(read('LICENSE'), /The Artificer of Ciphers LLC/);
 });

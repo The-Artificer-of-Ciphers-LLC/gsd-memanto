@@ -1,0 +1,255 @@
+name: Release
+
+# One manual trigger does the whole release: it bumps the version (in package.json and capability.json), updates the
+# changelog, tests against the gsd-core host, stages the release to npm, then commits the bump and tags it on main,
+# then waits for the approval and creates the GitHub Release. Nothing releases automatically; pushing a tag does not.
+#
+# The file is called publish.yml because the npm trusted publisher is bound to that file name (and to the
+# npm-publish environment below). Renaming either one means re-creating the trusted publisher on npmjs.com.
+#
+# Authentication is npm trusted publishing (OIDC): there is no npm token and no NPM_TOKEN secret. Do not set
+# NODE_AUTH_TOKEN anywhere in this job: even an empty value stops npm falling back to OIDC.
+#
+# The trusted publisher allows only `npm stage publish` (the direct `npm publish` action is left off, as npm
+# recommends). The run stages the release and it goes live when a maintainer approves it with two-factor
+# authentication: the Approve button on the package's Staged Packages tab, or `npm stage approve <stage-id>`.
+# That approval is the one step left to a person.
+#
+# Provenance records the commit the run started from, which is the commit before the version bump.
+#
+# The first release is run with bump `minor` (0.0.0 -> 0.1.0).
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      notes:
+        description: One-line changelog note, used only when the Unreleased section of CHANGELOG.md is empty
+        type: string
+        required: false
+      dry-run:
+        description: Do everything except stage the release, commit and tag
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # The last step waits up to 30 minutes for the staged version to be approved on npm.
+    timeout-minutes: 45
+    # A named environment lets you require a reviewer before the job runs (Settings > Environments).
+    # The trusted publisher on npmjs.com names this environment, so it must stay.
+    environment: npm-publish
+    permissions:
+      # Push the release commit and tag.
+      contents: write
+      # Read the CI result of the commit being released.
+      checks: read
+      # Lets npm exchange this run's OIDC identity for a short-lived credential, and sign provenance.
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BUMP: ${{ inputs.bump }}
+      NOTES: ${{ inputs.notes }}
+      DRY_RUN: ${{ inputs.dry-run }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Refuse to release from anywhere but main
+        if: github.ref != 'refs/heads/main'
+        env:
+          # Through env, never interpolated into the script: a branch name can hold shell characters.
+          RUN_REF: ${{ github.ref }}
+        run: |
+          echo "a release must run from main (this run is on $RUN_REF)" >&2
+          exit 1
+
+      - name: Require the tests to have passed on this commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          results="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs" --paginate \
+            --jq '.check_runs[] | select(.name | startswith("test (")) | "\(.name)=\(.status)/\(.conclusion)"')"
+          echo "$results"
+          if [ "$(printf '%s\n' "$results" | grep -c .)" -lt 4 ]; then
+            echo "expected the four test checks (ubuntu/macOS x gsd-core 1.20.1/1.22.0) on $GITHUB_SHA; wait for CI to finish and run again" >&2
+            exit 1
+          fi
+          if printf '%s\n' "$results" | grep -v -q '=completed/success$'; then
+            echo "a test check on $GITHUB_SHA has not passed; fix or wait, then run again" >&2
+            exit 1
+          fi
+
+      # No npm cache: the package has zero dependencies and no lockfile.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing and staging need npm 11.15 or later.
+      - name: Use an npm that supports trusted publishing and staging
+        run: |
+          npm install -g npm@^11.15.0
+          npm --version
+
+      - name: Bump the version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm version "$BUMP" --no-git-tag-version
+          version="$(node -p "require('./package.json').version")"
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "tag v$version already exists" >&2
+            exit 1
+          fi
+          # capability.json carries the same version; the release test fails if the two ever differ.
+          node <<'NODE'
+          const fs = require("node:fs");
+          const v = require("./package.json").version;
+          // Replace only the top-level version string so the rest of the manifest keeps its formatting.
+          const text = fs.readFileSync("capability.json", "utf8");
+          fs.writeFileSync("capability.json", text.replace(/^(  "version": )"[^"]*"/m, `$1"${v}"`));
+          const back = JSON.parse(fs.readFileSync("capability.json", "utf8")).version;
+          if (back !== v) { console.error(`capability.json version ${back} != package.json version ${v}`); process.exit(1); }
+          NODE
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing $version" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Update the changelog
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const text = fs.readFileSync("CHANGELOG.md", "utf8");
+          const heading = /^## Unreleased[ \t]*\r?\n/m;
+          const start = heading.exec(text);
+          if (!start) throw new Error("CHANGELOG.md has no '## Unreleased' section");
+          const bodyStart = start.index + start[0].length;
+          const next = text.slice(bodyStart).search(/^## /m);
+          const bodyEnd = next === -1 ? text.length : bodyStart + next;
+          let body = text.slice(bodyStart, bodyEnd).trim();
+          if (!body) {
+            const note = (process.env.NOTES ?? "").replace(/\s+/g, " ").trim();
+            if (!note) throw new Error("the Unreleased section is empty and no note was given; add one to CHANGELOG.md or fill in the 'notes' input");
+            body = `### Changed\n\n- ${note}`;
+          }
+          const date = new Date().toISOString().slice(0, 10);
+          const released = `## ${process.env.VERSION} - ${date}\n\n${body}\n\n`;
+          const out = text.slice(0, start.index) + "## Unreleased\n\n" + released + text.slice(bodyEnd);
+          fs.writeFileSync("CHANGELOG.md", out);
+          NODE
+          git --no-pager diff --stat
+
+      # The suite drives the real host, so the release is tested against the engines.gsd floor. The host is installed
+      # outside the repo, at an exact version, with install scripts disabled, and is never part of the package.
+      - name: Install the gsd-core host
+        shell: bash
+        env:
+          GSD_VERSION: "1.20.1"
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/gsd-core" --no-audit --no-fund --ignore-scripts "@opengsd/gsd-core@$GSD_VERSION"
+          echo "GSD_CORE_DIR=$RUNNER_TEMP/gsd-core/node_modules/@opengsd/gsd-core/gsd-core" >> "$GITHUB_ENV"
+
+      - name: Test
+        shell: bash
+        env:
+          MEMANTO_SPIKE_INSTALLER: "1"
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test.log
+          awk '/^# tests /{ n = $3 } END { if (n + 0 <= 1) { print "expected more than one test, got " n + 0; exit 1 } }' test.log
+
+      - name: Show what would be published
+        run: npm pack --dry-run
+
+      # Staging comes before the commit and tag on purpose: a staged version can be rejected if a later step
+      # fails, whereas a pushed tag is awkward to take back.
+      - name: Stage the release on npm
+        if: ${{ !inputs.dry-run }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm stage publish 2>&1 | tee stage.log
+          echo "Staged. Approve it on the package's Staged Packages tab, or run: npm stage list" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit and tag the release
+        if: ${{ !inputs.dry-run }}
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json capability.json CHANGELOG.md
+          git commit -m "chore(release): $VERSION"
+          git tag "v$VERSION"
+          if ! git push origin HEAD:main || ! git push origin "v$VERSION"; then
+            echo "The version is staged on npm but the commit or tag was not pushed. Reject the staged version (npm stage reject <stage-id>), then run the release again." >&2
+            exit 1
+          fi
+          echo "Committed and tagged v$VERSION on main." >> "$GITHUB_STEP_SUMMARY"
+
+      # Runs after the commit and tag, once the version is live on npm: the staged package goes live only when a
+      # maintainer approves it, so the step waits for that. If the approval takes longer than the wait, the step
+      # ends without failing and prints a command that creates the Release by hand; the release itself is already done.
+      - name: Create the GitHub Release once the version is on npm
+        if: ${{ !inputs.dry-run }}
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          name="$(node -p "require('./package.json').name")"
+          live=false
+          for attempt in $(seq 1 60); do
+            # An npm error is logged on every poll and the wait goes on: an outage must not look like a quiet wait.
+            if found="$(npm view "$name@$VERSION" version 2>&1)"; then
+              if [ "$found" = "$VERSION" ]; then
+                live=true
+                break
+              fi
+            else
+              echo "attempt $attempt: npm view failed: $found" >&2
+            fi
+            sleep 30
+          done
+          if [ "$live" != true ]; then
+            {
+              echo "$name@$VERSION was not on npm after 30 minutes, so no GitHub Release was created."
+              echo "After approving it, run this from a checkout of main:"
+              echo "gh release create v$VERSION --title $VERSION --notes \"\$(awk '/^## $VERSION /{f=1; next} /^## /{f=0} f' CHANGELOG.md)\""
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # A Release made by hand during the wait is left alone: the release itself is done, so this must not turn red.
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "A GitHub Release for v$VERSION already exists; leaving it as it is." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          awk -v v="$VERSION" 'index($0, "## " v " ") == 1 { f = 1; next } /^## / { f = 0 } f' CHANGELOG.md > release-notes.md
+          if [ -s release-notes.md ]; then
+            gh release create "v$VERSION" --title "$VERSION" --notes-file release-notes.md --verify-tag
+          else
+            echo "the changelog has no section for $VERSION; using generated notes" >&2
+            gh release create "v$VERSION" --title "$VERSION" --generate-notes --verify-tag
+          fi
+          echo "Created the GitHub Release for v$VERSION." >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Every test drives the real gsd-core host, so the suite runs against the 1.20.1 floor (engines.gsd) and the
+    # latest release, on both operating systems the owner supports. The explicit name keeps the check-run names
+    # `test (<os>, <gsd>)` that publish.yml counts before it releases.
+    name: test (${{ matrix.os }}, ${{ matrix.gsd }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        gsd: ["1.20.1", "1.22.0"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      # No npm cache and no `npm ci`: the package has zero dependencies and no lockfile.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      # The host is installed outside the repo, at an exact version, with install scripts disabled.
+      - name: Install the gsd-core host
+        shell: bash
+        env:
+          GSD_VERSION: ${{ matrix.gsd }}
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/gsd-core" --no-audit --no-fund --ignore-scripts "@opengsd/gsd-core@$GSD_VERSION"
+          echo "GSD_CORE_DIR=$RUNNER_TEMP/gsd-core/node_modules/@opengsd/gsd-core/gsd-core" >> "$GITHUB_ENV"
+
+      - name: Test
+        shell: bash
+        env:
+          MEMANTO_SPIKE_INSTALLER: "1"
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test.log
+
+      - name: Assert the suite ran more than one test
+        shell: bash
+        run: |
+          awk '/^# tests /{ n = $3 } END { if (n + 0 <= 1) { print "expected more than one test, got " n + 0; exit 1 } }' test.log
