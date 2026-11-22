@@ -316,8 +316,21 @@ const COLLIDES = /^id collides/;
 // such a reason names the global copy as the skipped one. Every other reason
 // (manifest read, reserved prefix, failed validation, or one this list does not
 // know) can belong to either copy.
-const POST_COLLISION =
-  /^(owns (skill|agent|config key|command family) |incompatible with GSD |hook fragment could not be materialized|invalid hook fragment|cross-capability validation (error|failed)|configHome confinement rejected)/;
+// The prefixes are listed in the loader's own order: test/loader-drift.test.cjs
+// reads the installed loader's source and fails when that order changes.
+const POST_COLLISION_REASONS = Object.freeze([
+  'owns skill ',
+  'owns agent ',
+  'owns config key ',
+  'owns command family ',
+  'incompatible with GSD ',
+  'hook fragment could not be materialized: ',
+  'invalid hook fragment: ',
+  'cross-capability validation error: ',
+  'cross-capability validation failed: ',
+  'configHome confinement rejected: ',
+]);
+const POST_COLLISION = new RegExp(`^(${POST_COLLISION_REASONS.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`);
 
 // The copy gsd-core loads, by the loader's precedence. The loader scans the
 // global root first. A global capability.json it accepts claims the id, even
@@ -548,8 +561,8 @@ function route(ctx) {
   return undefined;
 }
 
-// enginesCheck and loadedCopy are exported for tests only.
-module.exports = { route, gateChecks, enginesCheck, loadedCopy, PROBE_TIMEOUT_MS };
+// enginesCheck, loadedCopy and the POST_COLLISION list are exported for tests only.
+module.exports = { route, gateChecks, enginesCheck, loadedCopy, POST_COLLISION, POST_COLLISION_REASONS, PROBE_TIMEOUT_MS };
 
 if (require.main === module) {
   route({
