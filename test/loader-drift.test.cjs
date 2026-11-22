@@ -66,6 +66,45 @@ test('the installed gsd-core loader gives the POST_COLLISION reasons, in order, 
   );
 });
 
+// Round-5 WR-02: memanto.cjs loadedCopy also relies on two more loader facts.
+// (a) overlayRoots scans the global root before the project root, so a global
+// copy it accepts claims the id first and a project copy collides with it.
+// (b) the id is claimed only on acceptance (acceptedIds.add after the last
+// post-collision check), so a copy skipped for a POST_COLLISION reason never
+// held the id and the other copy cannot have collided with it.
+test('the installed gsd-core loader scans the global root first and claims the id only on acceptance', () => {
+  assert.ok(fs.existsSync(LOADER), `no gsd-core loader at ${LOADER} (set GSD_CORE_DIR)`);
+  const src = fs.readFileSync(LOADER, 'utf8');
+  const lines = src.split('\n');
+  const recheck = 'recheck memanto.cjs loadedCopy, which assumes it';
+
+  const start = lines.findIndex((l) => /^\s*function overlayRoots\s*\(/.test(l));
+  assert.ok(start !== -1, `${LOADER}: no function overlayRoots; ${recheck}`);
+  const end = lines.findIndex((l, i) => i > start && /^}\s*$/.test(l));
+  const body = lines.slice(start, end === -1 ? undefined : end + 1);
+  const globalAdd = body.findIndex((l) => /\badd\(\s*globalDir\b/.test(l));
+  const projectAdd = body.findIndex((l) => /\badd\(\s*projectDir\b/.test(l));
+  assert.ok(globalAdd !== -1 && projectAdd !== -1, `${LOADER}: overlayRoots no longer calls add(globalDir, ...) and add(projectDir, ...); ${recheck}`);
+  assert.ok(
+    globalAdd < projectAdd,
+    `${LOADER}:${start + 1 + projectAdd} overlayRoots now adds the project root before the global root (line ${start + 1 + globalAdd}); ${recheck} (global-first precedence)`,
+  );
+
+  const { out } = skipReasons(src);
+  const collision = out.find((r) => r.text.startsWith(COLLISION));
+  assert.ok(collision, `${LOADER}: no skip('${COLLISION}...') check; ${recheck}`);
+  const guard = lines.slice(Math.max(0, collision.line - 4), collision.line).join('\n');
+  assert.match(guard, /acceptedIds\.has\(id\)/, `${LOADER}:${collision.line}: the collision check no longer reads acceptedIds.has(id); ${recheck}`);
+  const adds = lines.map((l, i) => (/\bacceptedIds\.add\(/.test(l) ? i + 1 : null)).filter(Boolean);
+  const lastListed = out.filter((r) => POST_COLLISION_REASONS.some((p) => r.text.startsWith(p))).at(-1);
+  assert.ok(lastListed, `${LOADER}: none of POST_COLLISION_REASONS is a skip reason; ${recheck}`);
+  assert.equal(adds.length, 1, `${LOADER}: expected exactly one acceptedIds.add(, found lines ${adds.join(', ') || 'none'}; ${recheck}`);
+  assert.ok(
+    adds[0] > lastListed.line,
+    `${LOADER}:${adds[0]} claims the id (acceptedIds.add) before the last post-collision check at line ${lastListed.line}; ${recheck}`,
+  );
+});
+
 test('POST_COLLISION matches the reasons as gsd-core prints them, and no pre-collision reason', () => {
   const { loadedCopy } = require('../memanto.cjs');
   assert.equal(typeof loadedCopy, 'function');
