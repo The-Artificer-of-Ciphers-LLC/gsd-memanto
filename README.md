@@ -83,7 +83,7 @@ The gate resolves these keys the same way `gsd-tools config-get` does. A `GSD_PR
 http(s)://[user[:password]@]host[:port][/path]
 ```
 
-- The scheme is `http` or `https`, in lower case.
+- The scheme is `http` or `https`, in any letter case (`HTTP://` and `Https://` are accepted). It is shown and probed in lower case.
 - The user name and password use only URL-safe characters (letters, digits and `-._~!$&'()*+,;=`) and `%XX` escapes. Write `@` inside a password as `%40`, and `:`, `/`, `?`, `#` as `%3A`, `%2F`, `%3F`, `%23`.
 - `@` appears at most once, and only as the `user:password` separator. An `@` in the base path is not supported, encoded (`%40`) or not. Remove it from the path; a Memanto base URL has no reason to hold one.
 - The host is a name or IPv4 address (letters, digits, `.` and `-`) or a bracketed IPv6 address. The port is 1 to 5 digits, at most 65535.
