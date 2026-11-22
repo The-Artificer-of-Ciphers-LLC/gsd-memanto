@@ -68,7 +68,6 @@ jobs:
     env:
       BUMP: ${{ inputs.bump }}
       NOTES: ${{ inputs.notes }}
-      DRY_RUN: ${{ inputs.dry-run }}
     steps:
       # persist-credentials: false keeps the contents:write token out of .git/config while the tests run code
       # fetched from npm. The commit and tag step supplies the credential for its own push only.

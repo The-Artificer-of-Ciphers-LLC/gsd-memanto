@@ -104,6 +104,17 @@ test('publish.yml installs an exact npm version of at least 11.15', () => {
   assert.ok(maj > 11 || (maj === 11 && min >= 15), `npm ${m[1]} is older than 11.15`);
 });
 
+// IN-02: no dead job-level env variables.
+test('every job-level env variable in publish.yml is read by some step', () => {
+  const text = read('.github/workflows/publish.yml');
+  const block = /\n {4}env:\n((?: {6}.*\n)+)/.exec(text);
+  assert.ok(block, 'no job-level env block');
+  const names = [...block[1].matchAll(/^ {6}([A-Z_][A-Z0-9_]*):/gm)].map((m) => m[1]);
+  assert.ok(names.length > 0, 'job env block has no variables');
+  const unused = names.filter((n) => !new RegExp(`\\$${n}\\b|\\$\\{${n}\\}|env\\.${n}\\b|process\\.env\\.${n}\\b`).test(text));
+  assert.deepEqual(unused, []);
+});
+
 test('publish.yml keeps its file name and the npm-publish environment (trusted publisher binding)', () => {
   assert.match(read('.github/workflows/publish.yml'), /^\s+environment: npm-publish$/m);
 });
