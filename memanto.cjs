@@ -231,6 +231,37 @@ function unreadableCheck(scopeDirs, roots, version) {
 
 const isMemantoGate = (h) => Boolean(h && h.capId === 'memanto' && h.kind === 'gate');
 
+// Round-9 WR-01: the discuss:pre gate THIS doctor ships. A rendered memanto
+// gate counts only when it matches it exactly: kind gate, blocking true,
+// onError halt, a command-exit-zero predicate and the same command string.
+// blocking and onError are checked against constants too, so an edited own
+// manifest cannot relax them. A missing own gate matches nothing (fail closed).
+function shippedGate() {
+  const m = readJson(OWN_MANIFEST);
+  const g = m && Array.isArray(m.gates) ? m.gates.find((x) => x && x.point === 'discuss:pre') : null;
+  return g && g.check && g.check.predicate ? g : null;
+}
+
+function gateMismatch(h, shipped) {
+  if (!isMemantoGate(h)) return ['kind'];
+  const p = h.check && h.check.predicate ? h.check.predicate : {};
+  const fields = [];
+  if (!shipped || p.kind !== 'command-exit-zero' || p.kind !== shipped.check.predicate.kind || p.command !== shipped.check.predicate.command) fields.push('command');
+  if (h.blocking !== true || (shipped && h.blocking !== shipped.blocking)) fields.push('blocking');
+  if (h.onError !== 'halt' || (shipped && h.onError !== shipped.onError)) fields.push('onError');
+  return fields;
+}
+
+// The fields in which the memanto gates rendered at discuss:pre differ from
+// the shipped gate: null when one matches or none rendered.
+function gateMismatchAt(rh, shipped) {
+  const gates = rh.hooks.filter(isMemantoGate);
+  if (!gates.length || gates.some((h) => gateMismatch(h, shipped).length === 0)) return null;
+  return gateMismatch(gates[0], shipped).join(', ');
+}
+
+const rendersShippedGate = (rh, shipped) => rh.hooks.some((h) => isMemantoGate(h) && gateMismatch(h, shipped).length === 0);
+
 function loadFailureReason(rh) {
   const lines = [...rh.warnings, ...String(rh.stderr || '').split('\n')];
   const line = lines.find((l) => l.includes('capability "memanto" failed to load'));
@@ -239,12 +270,20 @@ function loadFailureReason(rh) {
   return m ? m[1] : line;
 }
 
-function renderCheck(point, rh) {
+function renderCheck(point, rh, shipped) {
   const id = `render:${point}`;
   if (!rh.ok) {
     return record(id, 'error', clean(`loop render-hooks ${point} failed: ${rh.reason}`, REASON_MAX), 'run gsd_run loop render-hooks to see the host error');
   }
-  if (point === 'discuss:pre' && rh.hooks.some(isMemantoGate)) return record(id, 'ok', 'the memanto gate renders at discuss:pre', '');
+  if (point === 'discuss:pre' && rendersShippedGate(rh, shipped)) return record(id, 'ok', 'the memanto gate renders at discuss:pre and matches this release', '');
+  if (point === 'discuss:pre' && rh.hooks.some(isMemantoGate)) {
+    return record(
+      id,
+      'error',
+      `the installed memanto gate at discuss:pre does not match this release: ${gateMismatchAt(rh, shipped)}; it is not enforced as shipped (fails open)`,
+      `reinstall the copy gsd-core loads in place at this release: ${reinstallFix().replace(/^reinstall: /, '')}`,
+    );
+  }
   if (point !== 'discuss:pre' && rh.hooks.some((h) => h && h.capId === 'memanto')) return record(id, 'ok', `memanto renders at ${point}`, '');
   const reason = loadFailureReason(rh);
   const why = reason ? ` (host: ${clean(reason, REASON_MAX)})` : '';
@@ -324,7 +363,7 @@ function sameReal(a, b) {
 // null when capability list could not be read; renders are the successful
 // render-hooks results as { point, rh } (none when memanto is disabled or
 // nothing rendered).
-function gatherEvidence({ scopeDirs, roots, rows, renders, enabled = true, manifests: read }) {
+function gatherEvidence({ scopeDirs, roots, rows, renders, enabled = true, manifests: read, shipped = shippedGate() }) {
   const rootOf = { global: roots.gsdHome, project: roots.projectRoot };
   const per = (fn) => ({ global: fn('global'), project: fn('project') });
   const manifests = read || readManifests(roots);
@@ -347,7 +386,9 @@ function gatherEvidence({ scopeDirs, roots, rows, renders, enabled = true, manif
     render: {
       ran: renders.length > 0,
       hook: rhs.some((rh) => rh.hooks.some((h) => h && h.capId === 'memanto')),
-      gate: renders.some((r) => r.point === 'discuss:pre' && r.rh.hooks.some(isMemantoGate)),
+      // Round-9 WR-01: the gate counts only when it is the shipped gate.
+      gate: renders.some((r) => r.point === 'discuss:pre' && rendersShippedGate(r.rh, shipped)),
+      mismatch: renders.filter((r) => r.point === 'discuss:pre').map((r) => gateMismatchAt(r.rh, shipped)).find(Boolean) || null,
     },
     reasons: renders.length ? loadFailureReasons(rhs) : [],
     enabled,
@@ -391,6 +432,7 @@ function collectChecks(cwd) {
   const roots = { gsdHome, projectRoot: cwd };
   const cfg = resolveConfig({ cwd, env });
   const manifests = readManifests(roots);
+  const shipped = shippedGate();
   const checks = [];
   let rows = null;
   let listOk = false;
@@ -427,14 +469,14 @@ function collectChecks(cwd) {
       for (const point of declaredPoints(manifests)) {
         const rh = host.renderHooksAt(located.tools, point, opts);
         if (rh.ok) renders.push({ point, rh });
-        renderChecks.push(renderCheck(point, rh));
+        renderChecks.push(renderCheck(point, rh, shipped));
       }
     }
   }
 
   // Round-7: the evidence is gathered once and classified once; loaded,
   // consent, duplicate-install and gate-bundle all come from that one result.
-  const cls = classifyInstall(gatherEvidence({ scopeDirs, roots, rows, renders, enabled, manifests }));
+  const cls = classifyInstall(gatherEvidence({ scopeDirs, roots, rows, renders, enabled, manifests, shipped }));
   const recs = installRecords(cls, { version: ownVersion(), reinstall: reinstallFix(), clean: cleanFactor });
   const unreadable = unreadableCheck(scopeDirs, roots, ownVersion());
 

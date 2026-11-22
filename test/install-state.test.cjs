@@ -70,7 +70,7 @@ function evOf(r) {
     ledger: { global: r.gLed, project: r.pLed },
     gateRuns,
     rows: r.rows,
-    render: { ran: r.ran, hook: r.hook, gate: r.gate },
+    render: { ran: r.ran, hook: r.hook, gate: r.gate, ...(r.mismatch ? { mismatch: r.mismatch } : {}) },
     reasons: r.reasons,
     enabled: r.enabled,
   };
@@ -210,7 +210,18 @@ const CASES = [
   ['global install renders a hook elsewhere but no gate', { g: true, gInst: true, rows: [row(G)], hook: true, gate: false }, STATES.GLOBAL_NO_GATE, G, (r) => {
     assert.ok(r.loaded.message.includes('renders no memanto gate at discuss:pre'), r.loaded.message);
   }],
-  ['project copy loads, renders no gate', { g: true, p: true, gInst: true, pInst: true, pNoGate: true, rows: [row(G, 'incompatible'), row(P)], hook: true, gate: false }, STATES.PROJECT_NO_GATE, P, (r) => {
+  // Round-9 WR-01: a memanto gate renders, but it is not the shipped one.
+  ['installed global gate does not match this release (r9 gexit0)', { g: true, gInst: true, rows: [row(G)], hook: true, gate: false, mismatch: 'command' }, STATES.GLOBAL_NO_GATE, G, (r) => {
+    for (const k of ['loaded', 'gateBundle']) {
+      assert.equal(r[k].status, 'error', JSON.stringify(r[k]));
+      assert.ok(r[k].message.includes('the installed memanto gate at discuss:pre does not match this release: command'), r[k].message);
+      assert.ok(r[k].fix.startsWith(`reinstall the global copy at ${D.global} in place`), r[k].fix);
+    }
+  }],
+  ['two installs, the global gate does not match and holds the id (r9 gnonblock)', { g: true, p: true, gInst: true, pInst: true, rows: [row(G), row(P)], hook: true, gate: false, mismatch: 'blocking, onError', reasons: [COLL] }, STATES.GLOBAL_NO_GATE, G, (r) => {
+    assert.ok(r.duplicate.message.includes('does not match this release (blocking, onError)'), r.duplicate.message);
+  }],
+  ['project copy loads, renders no gate',{ g: true, p: true, gInst: true, pInst: true, pNoGate: true, rows: [row(G, 'incompatible'), row(P)], hook: true, gate: false }, STATES.PROJECT_NO_GATE, P, (r) => {
     assert.ok(r.loaded.message.includes(`gsd-core loaded the project memanto copy at ${D.project}, but it renders no memanto gate`), r.loaded.message);
   }],
   ['installed global renders nothing and gives no reason (r6 IN-01)', { g: true, gInst: true, rows: [row(G)] }, STATES.UNEXPLAINED, null, (r) => {
