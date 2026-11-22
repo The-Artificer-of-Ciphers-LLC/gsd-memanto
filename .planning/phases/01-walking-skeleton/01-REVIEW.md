@@ -1,127 +1,118 @@
 ---
 phase: 01-walking-skeleton
-reviewed: 2026-11-22T01:33:28Z
+reviewed: 2026-11-22T02:03:03Z
 depth: standard
-files_reviewed: 15
+files_reviewed: 9
 files_reviewed_list:
   - .github/workflows/publish.yml
   - README.md
-  - capability.json
   - lib/checks.cjs
-  - lib/gate-bundle.cjs
-  - lib/gsd-host.cjs
   - lib/health.cjs
   - memanto.cjs
   - test/doctor.test.cjs
   - test/gate-bundle.test.cjs
-  - test/gsd-host.test.cjs
   - test/health.test.cjs
   - test/release.test.cjs
-  - test/stage-bundle.test.cjs
-  - tools/stage-bundle.cjs
 findings:
-  critical: 0
-  warning: 2
-  info: 2
-  total: 4
+  critical: 1
+  warning: 1
+  info: 3
+  total: 5
   necessity: 0
 status: issues_found
 ---
 
-# Phase 1: Code Review Report (round 3, re-review of the round-2 fixes)
+# Phase 1: Code Review Report (round 4, re-review of the round-3 fixes)
 
-**Reviewed:** 2026-11-22T01:33:28Z
+**Reviewed:** 2026-11-22T02:03:03Z
 **Depth:** standard
-**Files Reviewed:** 15 (`git diff 38a9ccf^1 HEAD -- . ':!.planning'`)
+**Files Reviewed:** 9 (`git diff e1ebc29^1 e1ebc29 -- . ':!.planning'`)
 **Status:** issues_found
 
 ## Summary
 
-This round re-reviews the nine round-2 fixes, `22e0589..38a9ccf`. `npm test` reports 273 tests: 272 pass, 1 skipped, 0 fail. Every host run used a temp `GSD_HOME` and a temp project. The only network traffic went to the test helper's local fake API and to closed local ports. The real `~/.gsd` was not touched. The necessity reference was not loaded for this round. No reachable guard was found whose guarded state cannot occur, so the review records 0 necessity findings.
+This round re-reviews the four round-3 fixes, `ebb2d4c`, `e7857a4`, `8fe7dc3` and `76f329d`. `npm test` reports 327 tests: 326 pass, 1 skipped, 0 fail. Every host run used a temp `GSD_HOME` and a temp project. The only network traffic went to closed local ports (`127.0.0.1:80`, `127.0.0.1:9`). No Memanto server was contacted. The necessity reference was not loaded for this round, so no necessity findings are recorded.
 
-Both critical findings are closed. The gate-bundle selection now matches gsd-core 1.20.1. It was checked against `capability-loader.cjs` (`overlayRoots`, the per-candidate loop, `ledgerOverlayIds`, the project consent check) and against `check predicate` (cwd is `findProjectRoot` after the worktree remap, the same root the loader uses). It was also checked end to end with the real host:
+The IN-01 fix introduced a critical regression. The new "no `:` in the authority" relaxation accepts `DOMAIN\user:password@host` and `user/x:password@host`. Such a value is then probed at the wrong host, and its password is printed verbatim on the gate's stderr (CR-01). Round 2 blocked these values. The IN-02 fix is incomplete. It ignores the loader's skip reason whenever a ledgered global row exists, so doctor reports `gate-bundle ok` while the gate runs code from a global bundle that gsd-core rejected (WR-01). Three info items remain.
 
-- A global-only install renders the gate and passes with healthy config. It blocks with `[agent-id]` when the agent id is empty.
-- A project-only install passes, including from a project subdirectory.
-- A planted nested `.gsd/capabilities/memanto` plus ledger in a subdirectory never runs (its marker file was never created).
-- With a hand-copied global bundle next to a consented project install, the loader keeps the global copy and records the project copy as `id collides`. The predicate blocks.
+### Status of the round-3 findings
 
-The agent found no layout in which project-tree code runs unless gsd-core rendered the gate from a consented bundle in that same scope.
-
-Two warnings and two info items remain. One warning is a pre-existing credential echo that the CR-02 rework did not cover. The other warning and both info items were introduced by the round-2 fixes.
-
-### Status of the round-2 findings
-
-| Round-2 | Verdict | Notes |
+| Round-3 | Verdict | Notes |
 |---------|---------|-------|
-| CR-01 | Fixed, complete | When a global `capability.json` exists, the predicate and `resolveGateBundle` (`lib/gate-bundle.cjs:71-74`) run global or block, and never fall back to the project copy. They run the project copy only when no global manifest exists, and gsd-core can then only have loaded the consented project copy. The committed-entry shape matches `isValidLedgerEntry` (`capability-ledger.cjs:289-319`). The checks below agree with gsd-core or fail closed: a pending global entry (gsd-core defers it and loads the project copy, so the predicate blocks), a global dir without a manifest, a symlinked or non-regular manifest, and `GSD_HOME` aliasing the project root (gsd-core demotes that to consent-required). The 12-case matrix and the reviewer reproduction are regression tests. |
-| CR-02 | Fixed for every value containing `@`, residual for values without one | Values with `@` are either cleanly stripped or shown as `<scheme>://<redacted>`, and an ambiguous `@` is never probed. The Basic header goes only to the configured host, with redirects not followed. Both effects of the new rejection are covered under the new findings: a residual leak for values without an `@` (WR-01) and legitimate URLs that are now blocked (IN-01). |
-| WR-01 | Fixed | Both `[gate-bundle]` lines print the expanded, sanitized paths and a version-pinned hint. A test pins the version against the manifest. |
-| WR-02 | Fixed, one new robustness gap | The `test` job holds `contents: read` only, with no id-token and no environment. The `release` job has `needs: test`, runs on a fresh runner, and runs no repo code (`--ignore-scripts` everywhere; the repo `.npmrc` holds only `save-exact=true`). No artifact or cache moves between the jobs. Commit and tag hold no token. The push step has hooks off, `--no-verify`, global and system config off, and an explicit URL. The bump pin rewrite is correct: the regex stops at the space before `--yes`, both pins in `capability.json` are rewritten, and the heredoc re-verifies every gate pin. The config refusal check is placed after npm staging and never runs in dry-run (WR-02 below). |
-| WR-03 | Fixed (hint correct), message inaccurate | The fix names the stray copy and never removes an installed bundle. The accompanying message names the wrong loaded copy (IN-02 below). |
-| IN-01 | Fixed | `probeRecord` cleans `fix` (`memanto.cjs:81-82`). |
-| IN-02 | Fixed | `stage()` removes its root on any throw. `install()` removes a fresh home on start or JSON failure. A non-`installed` status prints the `cleanup:` line before failing. |
-| IN-03 | Fixed | `test/gate-bundle.test.cjs:241-242`. |
-| IN-04 | Fixed | The table-driven matrix is at `test/gate-bundle.test.cjs:264-303`. The dead `projectRoot` was dropped from `memanto.cjs:366`. |
+| WR-01 | Fixed for the reported inputs; leak reopened by IN-01 | `%40`, `＠`, `﹫`, their UTF-8 percent forms, no-slash and non-http forms all print `<scheme>://<redacted>` or `<redacted>`. Both reported values print `http://<redacted>`. A scheme-less `localhost:8000` (parsed as scheme `localhost:`) prints `memanto.backend_url is not an http(s) URL: <redacted> -> gsd_run config-set memanto.backend_url <http(s)://host:port>`. That still gives a usable fix: it names the key and the required form, and the user can read the value with `config-get`. No other echo path was found. `redactUrl` is called only from `lib/checks.cjs:118,121,131`, and doctor reuses the same records. The Basic header still goes only to the parsed host, with redirects not followed. However, the classifier change in `8fe7dc3` lets a whole new class of credential URL through as "clean", and those URLs are echoed raw (CR-01). |
+| WR-02 | Fixed, complete | The refusal step comes right after the release checkout (`publish.yml:128-139`), before the main-only check, bump, stage, commit and push. It has no `if:`, so it runs in dry-run. It has no token and no step env. It uses `--name-only`. The push re-check uses the same regex and `--name-only`. Git lowercases section and key names, so `includeIf` matches `includeif`. The test pins the step order and the absence of `if:` and of a token, and it checks the planted secret values against real `git config --file` output. One residual robustness gap is listed as IN-03. |
+| IN-01 | Fixed as specified, but the rule is unsound | `http://host:8000/a@b` still blocks, which is correct: `http://u:12/x@host:8000` has the same shape. The message `has an ambiguous '@' in URL: http://<redacted>` is clear for a credential URL. The fix hint misleads a credential-free URL, and a path `@` after a `host:port` cannot be written in any form (IN-02). The premise "with no `:` in the authority there is no password for the `@` to end" is false, because the `:` can follow an unencoded `/` or `\` in the user name (CR-01). |
+| IN-02 | Fixed for an unledgered global copy; incomplete for a ledgered one | The hand-copied global case is right. The project copy's `id collides` reason proves that the global copy holds the id. The `engines.gsd` case is right, because `capability list` marks that row `incompatible`. The check was compared against `capability-loader.cjs` 1.20.1 (lines 610-879) and `loop-resolver.cjs:509-528`. The loader adds a copy to `acceptedIds` only after the collision check, fragment materialization and cross-capability validation (`:879`). `capability list` marks a row as anything but `active` only for `engines.gsd` or missing consent (`capability-command-router.cjs:594-599`). Render-hooks load-failure lines carry no scope and are de-duplicated by text (`memanto.cjs:288`). A ledgered global copy skipped for a validation, fragment, clash or cross-validation reason therefore still shows as `active` and is reported as loaded (WR-01). In the ambiguous validation-failure case doctor asserts one answer, and it also states a collision it never saw (IN-01). |
 
 ## Narrative Findings (AI reviewer)
 
+## Critical Issues
+
+### CR-01: A credential URL whose user name holds an unencoded `\` or `/` passes the gate, is probed at the wrong host, and has its password printed verbatim
+
+**File:** `lib/health.cjs:84-90` (the round-3 IN-01 rule), echoed through `lib/checks.cjs:130-145`; README claim at `README.md:80, 82`
+**Issue:** The rule at `lib/health.cjs:89` treats an `@` after the authority as unambiguous whenever the authority, as `splitUrl` cuts it at the first `/`, `\`, `?` or `#`, holds no `:`. In `CORP\alice:s3cret@host` and `team/alice:s3cret@host`, the `:` comes after the first `\` or `/`. The authority is then `CORP` or `team`, the value is classified `clean`, and `validateEndpointUrl` returns `ok`. The probe goes to host `corp` (a DNS lookup of the user-name prefix, with no `Authorization` header). `displayBase` then prints `u.href` with the path, which includes `alice:s3cret@memanto.internal:8000`. `DOMAIN\user` is a common user-name form. Before `8fe7dc3`, `hasAmbiguousUserinfo` blocked every such value and printed it as `http://<redacted>`, so this is a regression. It contradicts README lines 80 ("never prints it") and 82 ("no user name, password ...").
+**Reproduced** with a temp project whose `.planning/config.json` sets `backend_url` to `http://127.0.0.1\alice:s3cret@memanto.internal:8000` and `api_url` to `http://127.0.0.1/alice:s3cret@memanto.internal:8000`. Running `node scripts/gate.cjs` exited 1 and printed:
+`memanto: BLOCKED [backend-health] http://127.0.0.1/alice:s3cret@memanto.internal:8000/health is not healthy (connection) -> bring the Memanto backend at http://127.0.0.1/alice:s3cret@memanto.internal:8000 up ...`
+The `[api-health]` line was the same. Both probes went to `127.0.0.1:80`. A username-only token containing `/` (common in base64 tokens), such as `http://127.0.0.1/s3cretTokenTail@memanto.internal:8000`, leaks the same way. With a real token prefix such as `http://Zm9v/YmFy@host`, the prefix is also sent to DNS as a host name.
+**Fix:** Bring back the round-2 rule for any value without a parsed userinfo: an `@` look-alike anywhere outside the parsed userinfo is ambiguous. Keep the round-3 IN-01 wording change, which was the low-impact part of that finding, and drop the relaxation:
+```js
+// lib/health.cjs, classifyUrl, replacing line 89
+if (AT_LIKE.test(parts.rest)) return { kind: 'ambiguous', parts };
+```
+This blocks `http://host/a@b` again. That is acceptable, because a Memanto base URL has no reason to contain an `@`. Reword the README sentence on line 80 to match. Add the two reproduction values above, plus `http://tok/en@host:8000`, to `test/health.test.cjs`. Assert there that `validateEndpointUrl` is not `ok` and that the output never contains `s3cret` or `en@`. Add them also to the host-gate output test.
+
 ## Warnings
 
-### WR-01: A credential URL without an ASCII `@` is echoed verbatim, password included
+### WR-01: Doctor reports `gate-bundle ok` while the gate runs a ledgered global bundle that gsd-core skipped
 
-**File:** `lib/health.cjs:79` (`if (!s.includes('@')) return cap(s);`), reached from `lib/checks.cjs:118`
-**Issue:** `redactUrl` redacts only values that contain `@`. A value that carries a password but has no literal `@` fails to parse, gets reason `invalid-url`, and is printed whole on the gate's stderr and in doctor output. The README (`README.md:80`) now tells users to "percent-encode ... the at sign as `%40`". That makes over-encoding the separator itself a likely mistake. An IME full-width `＠` causes the same leak.
+**File:** `memanto.cjs:309-327` (`loadedCopy`, specifically `:321`), consumed by `gateBundleCheck` (`:336-349`), `loadedCheck` (`:163-172`) and `duplicateCheck`
+**Issue:** When a global ledger row exists, `loadedCopy` decides "global skipped" only from `globalRow.status !== 'active'` (line 321). It ignores `failures` even though they hold the loader's own skip reason. `capability list` sets a row to something other than `active` only for `engines.gsd` or missing consent (`capability-command-router.cjs:594-599`). A ledgered global copy skipped for any other reason still shows as `active`. That covers `invalid hook fragment`, `cross-capability validation failed`, `owns ... already owned` and `failed validation` (`capability-loader.cjs:686-847`). gsd-core then loads the consented project copy and renders its gate. The predicate (`lib/gate-bundle.cjs:72`) runs the global `scripts/gate.cjs`, because a global manifest and ledger entry exist. That is exactly the mismatch `gate-bundle` exists to report. The comment at `memanto.cjs:358-359` says the mismatch branch handles "failed validation". With this logic, that branch can only fire for `engines.gsd`.
+**Reproduced** (temp `GSD_HOME`; script at `/private/tmp/claude-501/-Users-trekkie-projects-gsd-memanto/4f758622-4157-4863-b789-bcac255aeca3/scratchpad/repro-in02.cjs`). The setup was a global `capability install` plus a consented project install. The global `capability.json` then got a contribution with the missing fragment `missing-fragment.md`, and a marker write was added to the global `scripts/gate.cjs`. Results:
+- render-hooks `discuss:pre` returned 1 memanto hook and the warning `capability "memanto" failed to load (invalid hook fragment: ...)`.
+- `_overlay.warnings` named scope `global`.
+- Doctor `--raw` said `loaded`: "memanto 0.1.0 is active in global scope", `gate-bundle`: ok ("runs the installed bundle gsd-core loads"), and `duplicate-install`: "gsd-core keeps the global one".
+- The predicate ran the global gate (the marker was created).
 
-**Reproduced** with a temp project whose `.planning/config.json` sets `backend_url` to `http://alice:s3cret%40memanto.internal:8000` and `api_url` to `http://alice:s3cret＠memanto.internal:8000`. Running `node scripts/gate.cjs` printed:
-`memanto: BLOCKED [backend-url] memanto.backend_url is not an http(s) URL: http://alice:s3cret%40memanto.internal:8000 -> ...`
-The `api-url` line showed the full-width value the same way. Exit code was 1. No probe was sent. The README's claim that "no part of the password reaches the transcript" is therefore false for these inputs.
-**Fix:** Never echo the authority of a value that fails validation. In `redactUrl`, take the text after `scheme://` up to the first `/`, `?` or `#`. If it contains `:`, `%40`, `@` or `＠`, print `<scheme>://<redacted>` plus the rest. A simpler option is to print only the key name for `invalid-url`:
+The `failed validation` variant (global `title: ""`) gave the same doctor output.
+**Fix:** Treat any failure reason that a project copy cannot get while the global copy holds the id as proof that the global copy was skipped, whether or not a global row exists. Only `PRE_COLLISION` reasons are ambiguous:
 ```js
-// lib/health.cjs, redactUrl
-const m = SCHEME_PREFIX.exec(s);
-if (!s.includes('@')) {
-  const auth = m ? s.slice(m[0].length).split(/[/?#]/)[0] : s;
-  if (/[:＠]|%40/i.test(auth) && withoutUserinfo(s) === null && !isPlainHostPort(auth)) return cap(`${m ? m[0] : ''}${REDACTED}`);
-  return cap(s);
-}
+// memanto.cjs, loadedCopy
+if (collided) globalSkipped = false;
+else if (other.some((r) => !PRE_COLLISION.test(r))) globalSkipped = true; // post-collision reason: only the global copy can get it while a project copy exists
+else if (globalRow && globalRow.status !== 'active') globalSkipped = true;
+else if (other.length > 0 && gateBundle.hasManifest(roots.projectRoot)) return { scope: 'unknown', dir: null }; // PRE_COLLISION only: either copy
+else globalSkipped = !globalRow && other.length > 0;
 ```
-`isPlainHostPort` returns true for `host` or `host:digits`. Add both strings above to `test/health.test.cjs` and to the host-gate output test.
-
-### WR-02: The release's git-config refusal check runs only after npm staging and never in dry-run
-
-**File:** `.github/workflows/publish.yml:223-229, 247-262`
-**Issue:** The check `git config --local --get-regexp '^(url|http|credential|include|includeif)\.'` runs inside the push step. That step comes after `npm stage publish` and is skipped when `dry-run` is true. The check reads only the checkout's local config, and no step between checkout and push writes a matching key. Nothing on the runner was verified. The test (`test/release.test.cjs`) uses synthetic config files only. Suppose `actions/checkout@v7` (or a later bump) leaves any `includeIf.*`/`http.*` entry in `.git/config`, for example from its separate-credentials-file mechanism. Then every real release stages a version on npm and only then refuses to push, and that has to be undone by hand with `npm stage reject`. A dry run cannot reveal the problem. Separately, `--get-regexp` prints each matching key's value to the job log, so a planted `http.extraheader` value would be printed there (it is masked only if GitHub recognizes it).
-**Fix:** Move the refusal check into its own step right after checkout. It needs no token and must run on every run, including dry-run. Keep the re-check in the push step as well. Print key names only:
-```yaml
-- name: Refuse a git config that could redirect or capture the push credential
-  shell: bash
-  run: |
-    set -euo pipefail
-    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-    if git config --local --name-only --get-regexp '^(url|http|credential|include|includeif)\.'; then
-      echo "refusing: the checkout's git config holds url/http/credential/include keys (names above)" >&2
-      exit 1
-    fi
-```
-Use `--name-only` in the push step as well. Add a `test/release.test.cjs` assertion that this step has no `if: !inputs.dry-run` and comes before `Stage the release on npm`.
+In `gateBundleCheck` and `loadedCheck`, report the `unknown` case as an `error` that names both directories. An example message: "gsd-core skipped one memanto copy (failed validation); doctor cannot tell which, and the gate runs <resolved>". Add the fragment repro, with a ledgered global and a project install, to `test/gate-bundle.test.cjs`, and assert that `gate-bundle` is `error`.
 
 ## Info
 
-### IN-01: `ambiguous-userinfo` blocks credential-free URLs that contain `@`, and its message says "malformed credentials"
+### IN-01: The `gate-bundle` message asserts a collision that doctor never observed
 
-**File:** `lib/health.cjs:58-60, 66-69`; `lib/checks.cjs:115-116`
-**Issue:** `withoutUserinfo` returns null whenever there is no userinfo. So `http://host:8000/a@b`, `http://host/?x=a@b` and `http://@host` all fail with `ambiguous-userinfo`. The message then says the key "has malformed credentials", but these URLs carry none. A Memanto base URL is unlikely to need an `@` in its path or query, so the impact is low.
-**Fix:** When the parsed URL has no `username` and no `password`, and its `host` is non-empty, accept it as unambiguous. A misparse can only move a password into the host:port or path when userinfo was intended. For example, flag the value only when the text between `://` and the first `@` contains `:`, or when there is no userinfo while the authority as typed contains `@`. Otherwise use the wording "contains an '@' outside user:password@".
+**File:** `memanto.cjs:369-372`, `:322-325`
+**Issue:** The text `(a global capability.json exists, so gsd-core skips the project copy with the same id as colliding)` is added whenever `loaded.scope === 'global'` and a project manifest exists. It does not depend on `collided`. Take an unledgered global copy that fails validation, next to a consented project install. The loader reports one `failed validation` reason. Lines 322-325 resolve that to "global loaded". The message then claims the project copy collided, although gsd-core actually loaded the project copy. `loaded` also says "gsd-core loads the global copy". The fix hint is still correct, because it deletes the global copy and keeps the project install.
+**Fix:** Add the parenthetical only when `COLLIDES` was seen. Report the PRE_COLLISION-only case as undetermined (see the WR-01 fix) instead of asserting global.
 
-### IN-02: The doctor `gate-bundle` message names the project copy as loaded when gsd-core loaded the hand-copied global copy
+### IN-02: A credential-free URL with an `@` after a `host:port` cannot be written in any form, and the hint points at credentials
 
-**File:** `memanto.cjs:278-279, 309-311`
-**Issue:** `loaded` comes from the first `active` row of `capability list`. That list is built from the ledger, so an unledgered global bundle has no row. The agent reproduced a hand-copied global bundle next to a consented project install. The list showed only `[project, active]`. The loader's `_overlay.warnings` recorded the project copy as skipped (`id collides with an already-registered capability`), which means gsd-core loaded the global copy. Doctor still says "gsd-core loaded memanto from <project dir>". That contradicts `README.md` ("gsd-core loads that global copy, even when no ledger lists it") and the predicate's own `[gate-bundle]` text. The fix hint is right: it deletes the global copy and keeps the project install. The comment at `memanto.cjs:287-288` repeats the same assumption.
-**Fix:** If `hasManifest(gsdHome)` is true and the global copy is not installed, report the loaded copy as the global directory, whatever the list's active row says. Better still, take the loaded scope from `loadRegistry`'s `_overlay.warnings`/accepted set rather than from `capability list`. Extend the doctor test at `test/gate-bundle.test.cjs:216-228` to assert that the message names the global directory as the loaded copy.
+**File:** `lib/health.cjs:42, 89`; `lib/checks.cjs:116-119`
+**Issue:** `http://host:8000/a@b` blocks, which is correct. Because `AT_LIKE` also matches `%40`, the encoded form `http://host:8000/a%40b` blocks as well, and so does `http://u:p@host:8000/x%40y`. The fix hint `<http(s)://[user:password@]host:port> (a literal '@' before the host; %40 inside the password)` tells a user with no credentials to change their credentials, not to remove the `@` from the path. The impact is low, because a Memanto base URL should not need one.
+**Fix:** Add this clause to the hint: "or remove the '@' (and %40) from the path, query and fragment". If CR-01's fix is applied, say this in the message for every value.
+
+### IN-03: The git-config refusal fails open when `git config` exits with an error other than "no match"
+
+**File:** `.github/workflows/publish.yml:136, 276`
+**Issue:** `if git config ... --get-regexp ...; then` treats every non-zero exit as "no matching key". An unparseable `.git/config` makes `git config` exit 128 (`fatal: bad config line 1`; reproduced with `git config --file <corrupt> --name-only --get-regexp ...`). The check then passes, the release goes on to `npm stage publish`, and only `git commit` fails afterwards. That leaves a staged version to reject by hand, which is the exact outcome WR-02 set out to prevent.
+**Fix:** Check the exit code explicitly:
+```bash
+set +e; names="$(git config --local --name-only --get-regexp '^(url|http|credential|include|includeif)\.')"; rc=$?; set -e
+if [ "$rc" -eq 0 ]; then printf '%s\n' "$names"; echo "refusing ..." >&2; exit 1; fi
+if [ "$rc" -ne 1 ]; then echo "git config failed (exit $rc); refusing to release" >&2; exit 1; fi
+```
 
 ---
 
-_Reviewed: 2026-11-22T01:33:28Z_
+_Reviewed: 2026-11-22T02:03:03Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
