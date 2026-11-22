@@ -738,6 +738,8 @@ const R9H = {
     },
     field: 'blocking, onError',
   },
+  // A gate pinned to another release (a downgraded or stale copy).
+  gpin: { edit: (m) => (m.gates[0].check.predicate.command = m.gates[0].check.predicate.command.split(`gsd-memanto@${MANIFEST.version}`).join('gsd-memanto@0.0.9')), field: 'version' },
   // One trailing space: the command is compared exactly.
   gspace: { edit: (m) => (m.gates[0].check.predicate.command = `${PREDICATE.command} `), field: 'command' },
 };
@@ -776,7 +778,11 @@ for (const [mode, { edit, field }] of Object.entries(R9H)) {
 
 test('round-9 WR-01: memanto.cjs pins the sha256 of the shipped discuss:pre predicate command', () => {
   const memanto = require('../memanto.cjs');
-  const sha = require('node:crypto').createHash('sha256').update(PREDICATE.command, 'utf8').digest('hex');
+  // Version-independent: every reinstall pin is normalised to @<version> first,
+  // so the release bump (which rewrites the pin) does not change the hash.
+  const normalised = PREDICATE.command.replace(/npm:@taoc\/gsd-memanto@[0-9A-Za-z.+-]+/g, 'npm:@taoc/gsd-memanto@<version>');
+  assert.notEqual(normalised, PREDICATE.command, 'the predicate has no reinstall pin to normalise');
+  const sha = require('node:crypto').createHash('sha256').update(normalised, 'utf8').digest('hex');
   assert.equal(memanto.SHIPPED_GATE_COMMAND_SHA256, sha, 'capability.json changed the predicate: update SHIPPED_GATE_COMMAND_SHA256 in memanto.cjs');
 });
 

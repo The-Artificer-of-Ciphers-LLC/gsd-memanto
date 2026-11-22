@@ -256,20 +256,35 @@ const isMemantoGate = (h) => Boolean(h && h.capId === 'memanto' && h.kind === 'g
 // onError halt, a command-exit-zero predicate and the same command string.
 // blocking and onError are checked against constants too, so an edited own
 // manifest cannot relax them. A missing own gate matches nothing (fail closed).
+// The returned gate carries the own manifest's version as releaseVersion.
 function shippedGate() {
   const m = readJson(OWN_MANIFEST);
   const g = m && Array.isArray(m.gates) ? m.gates.find((x) => x && x.point === 'discuss:pre') : null;
-  return g && g.check && g.check.predicate ? g : null;
+  if (!g || !g.check || !g.check.predicate) return null;
+  return { ...g, releaseVersion: typeof m.version === 'string' ? m.version : null };
 }
 
-// The sha256 of the shipped predicate command. The own capability.json sits in
-// the same editable bundle as this file, so the command is also checked
-// against this constant: doctor run from a bundle whose capability.json was
-// edited still reports the edit. test/gate-bundle.test.cjs fails when
-// capability.json changes the command without updating this constant.
-const SHIPPED_GATE_COMMAND_SHA256 = 'ac9ed2a17ed50c29f6d759cdca8fabc455e0709b69b513dfac32cf85fd46bd06';
+// The predicate carries a version-pinned reinstall hint, which the release
+// bump (publish.yml "Bump the version", the same pattern) rewrites. The command
+// is therefore compared with every pin normalised to @<version>, and the pins
+// are checked on their own against this bundle's version.
+const PIN = /npm:@taoc\/gsd-memanto@[0-9A-Za-z.+-]+/g;
+const normalisePins = (cmd) => String(cmd).replace(PIN, 'npm:@taoc/gsd-memanto@<version>');
+const pinsOf = (cmd) => (String(cmd).match(PIN) || []).map((x) => x.slice('npm:@taoc/gsd-memanto@'.length));
+
+// The sha256 of the shipped predicate command with its pins normalised. The
+// own capability.json sits in the same editable bundle as this file, so the
+// command is also checked against this constant: doctor run from a bundle
+// whose capability.json was edited still reports the edit. The constant does
+// not depend on the release version, so the release bump never touches it.
+// test/gate-bundle.test.cjs fails when capability.json changes the command
+// without updating this constant; test/release.test.cjs runs the bump.
+const SHIPPED_GATE_COMMAND_SHA256 = '718039219206da78b2b7ce250262212e9e547fc3889ed6ed08c38275df8cea68';
 const sha256 = (s) => crypto.createHash('sha256').update(String(s), 'utf8').digest('hex');
 
+// The fields in which a rendered hook differs from the shipped gate:
+// 'command' (another command), 'version' (the shipped command pinned to
+// another release), 'blocking', 'onError'. [] when it is the shipped gate.
 function gateMismatch(h, shipped) {
   if (!isMemantoGate(h)) return ['kind'];
   const p = h.check && h.check.predicate ? h.check.predicate : {};
@@ -279,9 +294,13 @@ function gateMismatch(h, shipped) {
     p.kind === 'command-exit-zero' &&
     p.kind === shipped.check.predicate.kind &&
     typeof p.command === 'string' &&
-    p.command === shipped.check.predicate.command &&
-    sha256(p.command) === SHIPPED_GATE_COMMAND_SHA256;
+    normalisePins(p.command) === normalisePins(shipped.check.predicate.command) &&
+    sha256(normalisePins(p.command)) === SHIPPED_GATE_COMMAND_SHA256;
   if (!commandOk) fields.push('command');
+  else {
+    const pins = pinsOf(p.command);
+    if (!shipped.releaseVersion || !pins.length || pins.some((v) => v !== shipped.releaseVersion)) fields.push('version');
+  }
   if (h.blocking !== true || (shipped && h.blocking !== shipped.blocking)) fields.push('blocking');
   if (h.onError !== 'halt' || (shipped && h.onError !== shipped.onError)) fields.push('onError');
   return fields;
@@ -613,6 +632,8 @@ module.exports = {
   LOOP_POINTS,
   pointsToRender,
   SHIPPED_GATE_COMMAND_SHA256,
+  shippedGate,
+  gateMismatch,
 };
 
 if (require.main === module) {
