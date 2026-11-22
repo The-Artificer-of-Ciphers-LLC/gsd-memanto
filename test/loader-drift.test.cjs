@@ -1,7 +1,8 @@
 'use strict';
 // Owner follow-up to round-4 WR-01: doctor treats a load-failure reason as the
 // global copy's when gsd-core's loader gives it only AFTER its id-collision
-// check (memanto.cjs POST_COLLISION_REASONS). That holds only while the
+// check (lib/install-state.cjs POST_COLLISION_REASONS, used by classifyInstall;
+// round 7 moved the inference there from memanto.cjs loadedCopy). That holds only while the
 // installed loader keeps that order. This test reads the installed loader
 // SOURCE as text (never require()s it, so the builtin-only require contract
 // holds) and fails with a clear message when the order of its skip() checks no
@@ -12,7 +13,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const env = require('./helpers/gsd-env.cjs');
-const { POST_COLLISION_REASONS } = require('../memanto.cjs');
+const { POST_COLLISION_REASONS, POST_COLLISION, classifyInstall, STATES } = require('../lib/install-state.cjs');
 
 const LOADER = path.join(env.coreDir(), 'bin', 'lib', 'capability-loader.cjs');
 const COLLISION = 'id collides';
@@ -25,7 +26,7 @@ const ANY_STAGE = ['overlay processing error: '];
 function skipReasons(src) {
   const lines = src.split('\n');
   const start = lines.findIndex((l) => /\bconst skip = \(reason\) =>/.test(l));
-  assert.ok(start !== -1, `${LOADER}: no "const skip = (reason) =>" helper; the loader changed shape, recheck POST_COLLISION_REASONS in memanto.cjs`);
+  assert.ok(start !== -1, `${LOADER}: no "const skip = (reason) =>" helper; the loader changed shape, recheck POST_COLLISION_REASONS in lib/install-state.cjs`);
   const out = [];
   for (let i = start + 1; i < lines.length; i++) {
     for (const m of lines[i].matchAll(/\bskip\(\s*(['"`])((?:\\.|(?!\1).)*)\1/g)) out.push({ line: i + 1, text: m[2] });
@@ -34,19 +35,19 @@ function skipReasons(src) {
 }
 
 test('the installed gsd-core loader gives the POST_COLLISION reasons, in order, only after its id-collision check', () => {
-  assert.ok(Array.isArray(POST_COLLISION_REASONS) && POST_COLLISION_REASONS.length > 0, 'memanto.cjs must export POST_COLLISION_REASONS');
+  assert.ok(Array.isArray(POST_COLLISION_REASONS) && POST_COLLISION_REASONS.length > 0, 'lib/install-state.cjs must export POST_COLLISION_REASONS');
   assert.ok(fs.existsSync(LOADER), `no gsd-core loader at ${LOADER} (set GSD_CORE_DIR)`);
   const { lines, out } = skipReasons(fs.readFileSync(LOADER, 'utf8'));
   const where = (r) => `${path.basename(LOADER)}:${r.line} skip('${r.text}...')`;
   const collision = out.findIndex((r) => r.text.startsWith(COLLISION));
-  assert.ok(collision !== -1, `${LOADER}: no skip('${COLLISION}...') check; recheck POST_COLLISION_REASONS in memanto.cjs`);
+  assert.ok(collision !== -1, `${LOADER}: no skip('${COLLISION}...') check; recheck POST_COLLISION_REASONS in lib/install-state.cjs`);
   const listed = (r) => POST_COLLISION_REASONS.some((p) => r.text.startsWith(p));
 
   const early = out.slice(0, collision).filter(listed);
   assert.deepEqual(
     early.map(where),
     [],
-    'these POST_COLLISION reasons now come BEFORE the id-collision check, so a project copy can get them; remove them from memanto.cjs POST_COLLISION_REASONS',
+    'these POST_COLLISION reasons now come BEFORE the id-collision check, so a project copy can get them; remove them from lib/install-state.cjs POST_COLLISION_REASONS',
   );
 
   for (const r of out.slice(collision + 1).filter((x) => ANY_STAGE.some((p) => x.text.startsWith(p)))) {
@@ -57,16 +58,16 @@ test('the installed gsd-core loader gives the POST_COLLISION reasons, in order, 
   }
   const after = out.slice(collision + 1).filter((r) => !ANY_STAGE.some((p) => r.text.startsWith(p)));
   const unlisted = after.filter((r) => !listed(r));
-  assert.deepEqual(unlisted.map(where), [], 'the loader has new skip reasons after its id-collision check; add them to memanto.cjs POST_COLLISION_REASONS (or ANY_STAGE here)');
+  assert.deepEqual(unlisted.map(where), [], 'the loader has new skip reasons after its id-collision check; add them to lib/install-state.cjs POST_COLLISION_REASONS (or ANY_STAGE here)');
   const order = after.map((r) => POST_COLLISION_REASONS.findIndex((p) => r.text.startsWith(p)));
   assert.deepEqual(
     order,
     POST_COLLISION_REASONS.map((_, i) => i),
-    `the loader's post-collision skip order (${after.map(where).join(', ')}) no longer matches memanto.cjs POST_COLLISION_REASONS`,
+    `the loader's post-collision skip order (${after.map(where).join(', ')}) no longer matches lib/install-state.cjs POST_COLLISION_REASONS`,
   );
 });
 
-// Round-5 WR-02: memanto.cjs loadedCopy also relies on two more loader facts.
+// Round-5 WR-02: lib/install-state.cjs classifyInstall also relies on two more loader facts.
 // (a) overlayRoots scans the global root before the project root, so a global
 // copy it accepts claims the id first and a project copy collides with it.
 // (b) the id is claimed only on acceptance (acceptedIds.add after the last
@@ -76,7 +77,7 @@ test('the installed gsd-core loader scans the global root first and claims the i
   assert.ok(fs.existsSync(LOADER), `no gsd-core loader at ${LOADER} (set GSD_CORE_DIR)`);
   const src = fs.readFileSync(LOADER, 'utf8');
   const lines = src.split('\n');
-  const recheck = 'recheck memanto.cjs loadedCopy, which assumes it';
+  const recheck = 'recheck lib/install-state.cjs classifyInstall, which assumes it';
 
   const start = lines.findIndex((l) => /^\s*function overlayRoots\s*\(/.test(l));
   assert.ok(start !== -1, `${LOADER}: no function overlayRoots; ${recheck}`);
@@ -105,12 +106,27 @@ test('the installed gsd-core loader scans the global root first and claims the i
   );
 });
 
-test('POST_COLLISION matches the reasons as gsd-core prints them, and no pre-collision reason', () => {
-  const { loadedCopy } = require('../memanto.cjs');
-  assert.equal(typeof loadedCopy, 'function');
-  const { POST_COLLISION } = require('../memanto.cjs');
+// The classifier uses exactly those facts: with two copies and a memanto hook
+// rendered, a post-collision reason means the project copy loaded, a collision
+// means the global copy loaded, and a pre-collision reason is undetermined.
+test('POST_COLLISION matches the reasons as gsd-core prints them, and classifyInstall applies it', () => {
   for (const p of POST_COLLISION_REASONS) assert.ok(POST_COLLISION.test(`${p}x`), p);
-  for (const r of ['id collides with an already-registered capability', 'failed validation: x', 'id uses a reserved first-party prefix (gsd-/gsd-core-/anthropic-)', 'overlay processing error: x']) {
-    assert.ok(!POST_COLLISION.test(r), r);
-  }
+  const pre = ['id collides with an already-registered capability', 'failed validation: x', 'id uses a reserved first-party prefix (gsd-/gsd-core-/anthropic-)', 'overlay processing error: x'];
+  for (const r of pre) assert.ok(!POST_COLLISION.test(r), r);
+  const ev = (reasons) => ({
+    dirs: { global: '/h/m', project: '/p/m' },
+    manifest: { global: true, project: true },
+    installed: { global: true, project: true },
+    gateFile: { global: true, project: true },
+    gateRuns: '/h/m',
+    rows: [
+      { id: 'memanto', scope: 'global', status: 'active' },
+      { id: 'memanto', scope: 'project', status: 'active' },
+    ],
+    render: { ran: true, hook: true },
+    reasons,
+  });
+  for (const p of POST_COLLISION_REASONS) assert.equal(classifyInstall(ev([`${p}x`])).state, STATES.PROJECT_LOADED, p);
+  assert.equal(classifyInstall(ev([pre[0]])).state, STATES.GLOBAL_LOADED);
+  for (const r of pre.slice(1)) assert.equal(classifyInstall(ev([r])).state, STATES.UNDETERMINED, r);
 });
