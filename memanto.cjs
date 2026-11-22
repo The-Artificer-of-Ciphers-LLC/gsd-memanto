@@ -220,33 +220,23 @@ function readManifests(roots) {
   return { global: gateBundle.readManifest(roots.gsdHome), project: gateBundle.readManifest(roots.projectRoot) };
 }
 
-// Round-9 CR-01: a capability.json or ledger in either scope that exists but is
-// not a regular file under the size cap (a FIFO, socket, device, a symlink to
-// one, or too large). Doctor and gsd-core both treat it as unreadable.
-function unreadableCheck(scopeDirs, roots, version) {
+// Round-9 CR-01 / round-10 WR-02: a capability.json or ledger in either scope
+// that exists but cannot be read (a FIFO, socket, device, a symlink to one, a
+// file over the size cap, or no read permission), once per physical file, with
+// the scope it was found in. The classifier gives it the scope gsd-core uses
+// and builds the unreadable-files record from it (lib/install-state.cjs).
+function unreadableEvidence(roots) {
   const seen = new Set();
-  const found = [];
+  const out = [];
   for (const [scope, root] of [['global', roots.gsdHome], ['project', roots.projectRoot]]) {
     for (const u of gateBundle.unreadableFiles(root)) {
-      if (seen.has(u.file)) continue;
-      seen.add(u.file);
-      found.push({ ...u, scope, ledgered: gateBundle.ledgerState(root) !== 'none' });
+      const key = path.join(canonical(path.dirname(u.file)).path, path.basename(u.file));
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ ...u, scope });
     }
   }
-  if (!found.length) return null;
-  const fixes = found.map((u) => {
-    if (u.kind === 'manifest' && u.ledgered) {
-      return `reinstall the ${u.scope} copy in place: gsd-tools capability install npm:@taoc/gsd-memanto@${version} --yes${u.scope === 'project' ? ' --scope project' : ''}`;
-    }
-    if (u.kind === 'manifest') return `move ${u.file} aside (no ${u.scope} ledger lists that copy)`;
-    return `move ${u.file} aside, then reinstall memanto in ${u.scope} scope (gsd-core cannot read that ledger either)`;
-  });
-  return record(
-    'unreadable-files',
-    'error',
-    clean(`${found.map((u) => u.reason).join('; ')}; doctor and gsd-core read only small regular files there, so doctor treats it as invalid and never reads it`, REASON_MAX * 2),
-    clean(fixes.join('; '), REASON_MAX * 2),
-  );
+  return out;
 }
 
 const isMemantoGate = (h) => Boolean(h && h.capId === 'memanto' && h.kind === 'gate');
@@ -453,10 +443,12 @@ function gatherEvidence({ scopeDirs, roots, rows, renders, enabled = true, manif
     },
     reasons: renders.length ? loadFailureReasons(rhs) : [],
     enabled,
+    unreadable: unreadableEvidence(roots),
   };
 }
 
-// installRecords cleans with a length factor: 2 for messages, 3 for fixes.
+// installRecords cleans with a length factor: 2 for messages, 3 for fixes, 4
+// for unreadable-files, which lists every unreadable file (1200 characters).
 function cleanFactor(text, factor) {
   return clean(text, factor === 3 ? 600 : REASON_MAX * factor);
 }
@@ -549,13 +541,12 @@ function collectChecks(cwd) {
   // consent, duplicate-install and gate-bundle all come from that one result.
   const cls = classifyInstall(gatherEvidence({ scopeDirs, roots, rows, renders, enabled, manifests, shipped }));
   const recs = installRecords(cls, { version: ownVersion(), reinstall: reinstallFix(), clean: cleanFactor });
-  const unreadable = unreadableCheck(scopeDirs, roots, ownVersion());
   // Round-9 IN-03: built after the classification, so a no-reason render fix
   // is the loaded record's own remedy (the reinstall of the copy it names).
   const renderChecks = rendered.map((r) => renderCheck(r.point, r.rh, shipped, recs.loaded.fix));
 
   if (listFailure) checks.push(listFailure);
-  if (unreadable) checks.push(unreadable);
+  if (recs.unreadable) checks.push(recs.unreadable);
   // Round-9 IN-01: with memanto disabled, loaded is a warn (see the README).
   if (located.ok) checks.push(recs.loaded);
   if (listOk) {

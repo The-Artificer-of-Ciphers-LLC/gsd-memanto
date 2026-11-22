@@ -56,6 +56,11 @@ function claimsOf(message, dirs) {
 //   onlyScope: 'global'|'project'  the scope of the one copy on disk
 //   unledgeredDirs: [dir]        copies on disk that no ledger lists
 //   rowsKnown: bool              capability list was readable
+//   copyScopes: [scope]          the scopes that hold a memanto copy (one scope when the roots alias)
+//   unreadable: [{file, kind, cause, scope}]  capability.json / ledger files that exist but cannot be
+//                                read; cause 'permission' | 'nonregular' | 'oversized' | 'invalid' | 'other';
+//                                scope as gsd-core sees it (project when GSD_HOME is the project root)
+//   ledgerFiles: [file]          the two scope ledger paths
 function assertConsistent(records, facts = {}, label = '') {
   const list = records.filter(Boolean);
   const at = (r) => `${label} ${r.id}: ${JSON.stringify(r)}`;
@@ -116,7 +121,11 @@ function assertConsistent(records, facts = {}, label = '') {
   // loaded and gate-bundle agree: an error in loaded is an error in gate-bundle,
   // and gate-bundle is ok only when loaded is.
   if (loaded && gb && loaded.status === 'error') assert.equal(gb.status, 'error', `${label} loaded is an error but gate-bundle is ${gb.status}: ${gb.message}`);
-  if (loaded && gb && gb.status === 'ok') assert.equal(loaded.status, 'ok', `${label} gate-bundle is ok but loaded is ${loaded.status}: ${loaded.message}`);
+  // Round-10: loaded may only warn that capability list could not be read
+  // (it says so); the gate evidence then still comes from render-hooks.
+  if (loaded && gb && gb.status === 'ok' && !(facts.rowsKnown === false && loaded.status === 'warn' && /capability list could not be read/.test(loaded.message))) {
+    assert.equal(loaded.status, 'ok', `${label} gate-bundle is ok but loaded is ${loaded.status}: ${loaded.message}`);
+  }
 
   // Round-8 WR-03: every record names the same loaded copy, or none does.
   const claims = new Map();
@@ -173,6 +182,68 @@ function assertConsistent(records, facts = {}, label = '') {
     const re = new RegExp(`\\b${other} (?:memanto )?(?:copy|install|bundle|one)\\b`);
     for (const r of list) assert.ok(!re.test(r.message) && !re.test(r.fix), `${at(r)} names a ${other} copy, but the only copy is in ${facts.onlyScope} scope`);
   }
+
+  // Round-10 WR-02: unreadable-files is built from the classification, so it
+  // names the copies by the scope gsd-core gives them and installs memanto only
+  // in a scope that holds a copy.
+  const ur = byId('unreadable-files');
+  if (ur && facts.copyScopes) {
+    for (const s of installScopes(ur.fix)) {
+      assert.ok(facts.copyScopes.includes(s), `${at(ur)} installs memanto in ${s} scope, but only ${facts.copyScopes.join(' and ') || 'no'} scope holds a copy`);
+    }
+    for (const m of ur.fix.matchAll(/\bthe (global|project) copy(?: at (\S+?))?[,;:)]?(?:\s|$)/g)) {
+      assert.ok(facts.copyScopes.includes(m[1]), `${at(ur)} names the ${m[1]} copy, but only ${facts.copyScopes.join(' and ') || 'no'} scope holds a copy`);
+      if (m[2] && facts.dirs) assert.equal(path.resolve(m[2]), path.resolve(facts.dirs[m[1]]), `${at(ur)} puts the ${m[1]} copy at ${m[2]}`);
+    }
+    for (const m of ur.fix.matchAll(/memanto is not installed in (global|project) scope/g)) {
+      assert.ok(!facts.copyScopes.includes(m[1]), `${at(ur)} says memanto is not installed in ${m[1]} scope, but a copy is there`);
+    }
+  }
+  // With one copy, unreadable-files and loaded give the install command of that copy's scope.
+  if (facts.onlyScope) {
+    for (const r of [ur, loaded].filter(Boolean)) {
+      for (const s of installScopes(r.fix)) assert.equal(s, facts.onlyScope, `${at(r)} installs in ${s} scope, but the only copy is in ${facts.onlyScope} scope`);
+    }
+  }
+  // The remedy follows the cause: a permission problem is fixed with chmod and
+  // the file is kept; a FIFO, device or symlink is removed; an oversized or
+  // invalid file is inspected. Every record that gives a remedy for the file
+  // gives the one unreadable-files gives.
+  const REMEDY = { permission: 'restore read permission on', nonregular: 'remove', oversized: 'inspect', invalid: 'inspect' };
+  for (const u of facts.unreadable || []) {
+    assert.ok(ur, `${label} ${u.file} cannot be read (${u.cause}), but doctor printed no unreadable-files record`);
+    assert.ok(ur.message.includes(u.file), `${at(ur)} does not name ${u.file}`);
+    const want = REMEDY[u.cause];
+    if (want) assert.ok(ur.fix.includes(`${want} ${u.file}`), `${at(ur)} does not say "${want} ${u.file}" for a ${u.cause} file`);
+    if (u.cause === 'permission') assert.ok(new RegExp(`chmod u\\+rw? ${escapeRe(u.file)}`).test(ur.fix), `${at(ur)} gives no chmod for ${u.file}`);
+    const keepFile = u.cause !== 'nonregular';
+    for (const r of list) {
+      if (keepFile) {
+        assert.ok(!new RegExp(`\\b(?:remove|delete|move) ${escapeRe(u.file)}`).test(r.fix), `${at(r)} removes ${u.file}, a ${u.cause} problem that keeps the file`);
+      }
+      for (const verb of new Set(Object.values(REMEDY))) {
+        if (r.fix.includes(`${verb} ${u.file}`)) assert.ok(ur.fix.includes(`${verb} ${u.file}`), `${at(r)} gives another remedy for ${u.file} than unreadable-files: ${ur.fix}`);
+      }
+    }
+  }
+  // A ledger is never moved aside without saying it drops every other entry in it.
+  for (const r of list) {
+    for (const f of facts.ledgerFiles || []) {
+      if (r.fix.includes(`move ${f} aside`)) assert.ok(/drops the ledger entr/.test(r.fix), `${at(r)} moves the ledger ${f} aside without saying it drops the other entries`);
+    }
+  }
 }
 
-module.exports = { assertConsistent, claimsOf };
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// The scope of every memanto install command in a fix. The generic hint
+// "--yes (add --scope project inside a project ...)" names no scope.
+function installScopes(text) {
+  const out = [];
+  for (const m of text.matchAll(/capability install npm:@taoc\/gsd-memanto@\S+ --yes( --scope project)?( \(add)?/g)) {
+    if (!m[2]) out.push(m[1] ? 'project' : 'global');
+  }
+  return out;
+}
+
+module.exports = { assertConsistent, claimsOf, installScopes };
