@@ -132,6 +132,65 @@ for (const [label, value, secret] of UNPARSEABLE_USERINFO) {
   });
 }
 
+// Round-2 CR-02: a password that starts with port-like digits followed by '/',
+// '?' or '#' PARSES, as a URL whose host is the username. Nothing before the
+// last '@' may be echoed, and such a value is never probed.
+const MISPARSED_USERINFO = [
+  ['a path', 'http://u:12/x@host:8000', ['12/x', 'u:12', 'u:']],
+  ['a fragment', 'http://user:123#w@host', ['123', 'user', '#w']],
+  ['a query', 'http://user:123?w@host:8000', ['123', 'user', '?w']],
+];
+
+for (const [label, value, secrets] of MISPARSED_USERINFO) {
+  test(`redactUrl hides userinfo that parses as host:port plus ${label}`, () => {
+    assert.doesNotThrow(() => new URL(value), 'the case must parse as a URL');
+    const out = health().redactUrl(value);
+    for (const secret of secrets) assert.ok(!out.includes(secret), `${JSON.stringify(value)} -> ${JSON.stringify(out)}`);
+    assert.ok(!out.includes('@'), `${JSON.stringify(value)} -> ${JSON.stringify(out)}`);
+  });
+
+  test(`validateEndpointUrl rejects a value whose '@' is not a well-formed userinfo (${label})`, () => {
+    assert.deepEqual(health().validateEndpointUrl(value), { ok: false, reason: 'ambiguous-userinfo' });
+  });
+
+  test(`the gate never prints or probes the misparsed userinfo of a backend_url with ${label}`, () => {
+    const r = runGate({ backend_url: value, api_url: servers.ok.url });
+    assert.equal(r.block, true, r.message);
+    assert.deepEqual(r.ids, ['backend-url'], r.message);
+    for (const secret of secrets) assert.ok(!r.message.includes(secret), `userinfo leaked: ${r.message}`);
+    assert.ok(!r.message.includes('@') && !r.message.includes('curl'), `userinfo leaked: ${r.message}`);
+  });
+}
+
+test('a misparsed userinfo pointing at a live local port is not probed, so the password never leaves the machine', () => {
+  const port = new URL(servers.ok.url).port;
+  const before = servers.ok.requests.length;
+  const r = runGate({ backend_url: `http://127.0.0.1:${port}/x@host:8000`, api_url: servers.ok.url });
+  assert.deepEqual(r.ids, ['backend-url'], r.message);
+  assert.ok(lineFor(r, 'backend-url').includes('memanto.backend_url has malformed credentials, so its host is ambiguous'), r.message);
+  assert.ok(!r.message.includes('/x') && !r.message.includes(port), r.message);
+  assert.ok(!lineFor(r, 'backend-url').endsWith('…'), 'the line must fit LINE_MAX with its fix');
+  assert.deepEqual(servers.ok.requests.slice(before).map((q) => q.url), ['/health'], 'only the api probe may reach the server');
+});
+
+test('displayBase (the health line and the curl hint) never echoes misparsed userinfo', () => {
+  const { displayBase } = require('../lib/checks.cjs');
+  for (const [, value, secrets] of MISPARSED_USERINFO) {
+    const href = new URL(value).href;
+    const out = displayBase(href);
+    for (const secret of secrets) assert.ok(!out.includes(secret), `${href} -> ${out}`);
+    assert.ok(!out.includes('@'), `${href} -> ${out}`);
+  }
+  assert.equal(displayBase('http://user:pa%20ss@host:8000/api/?q=1#x'), 'http://host:8000/api');
+});
+
+test('redactUrl still shows the host of a well-formed user:password@host URL', () => {
+  const { redactUrl, validateEndpointUrl } = health();
+  assert.equal(redactUrl('http://user:pass@host:8000/x'), 'http://host:8000/x');
+  assert.equal(redactUrl('http://user:p@ss@host:8000/'), 'http://host:8000/');
+  assert.equal(validateEndpointUrl('http://user:p@ss@host:8000/').ok, true);
+});
+
 test('redactUrl removes control characters so a value cannot forge extra gate lines', () => {
   const { redactUrl } = health();
   const out = redactUrl('not a url\nmemanto: BLOCKED [fake] x -> y\r');
