@@ -14,7 +14,7 @@ const { resolveConfig } = require('./lib/config.cjs');
 const { cap, CONTROL_CHARS } = require('./lib/health.cjs');
 const host = require('./lib/gsd-host.cjs');
 const gateBundle = require('./lib/gate-bundle.cjs');
-const { readJsonOrNull, MANIFEST_MAX_BYTES } = require('./lib/safe-read.cjs');
+const { readJsonOrNull, plainReadBlocks, MANIFEST_MAX_BYTES, CONFIG_MAX_BYTES } = require('./lib/safe-read.cjs');
 const { classifyInstall, installRecords, renderFix, reasonClass, REASON_CLASSES, STATES, POST_COLLISION, POST_COLLISION_REASONS } = require('./lib/install-state.cjs');
 
 const USAGE = 'Usage: gsd_run memanto doctor [--raw]';
@@ -220,33 +220,23 @@ function readManifests(roots) {
   return { global: gateBundle.readManifest(roots.gsdHome), project: gateBundle.readManifest(roots.projectRoot) };
 }
 
-// Round-9 CR-01: a capability.json or ledger in either scope that exists but is
-// not a regular file under the size cap (a FIFO, socket, device, a symlink to
-// one, or too large). Doctor and gsd-core both treat it as unreadable.
-function unreadableCheck(scopeDirs, roots, version) {
+// Round-9 CR-01 / round-10 WR-02: a capability.json or ledger in either scope
+// that exists but cannot be read (a FIFO, socket, device, a symlink to one, a
+// file over the size cap, or no read permission), once per physical file, with
+// the scope it was found in. The classifier gives it the scope gsd-core uses
+// and builds the unreadable-files record from it (lib/install-state.cjs).
+function unreadableEvidence(roots) {
   const seen = new Set();
-  const found = [];
+  const out = [];
   for (const [scope, root] of [['global', roots.gsdHome], ['project', roots.projectRoot]]) {
     for (const u of gateBundle.unreadableFiles(root)) {
-      if (seen.has(u.file)) continue;
-      seen.add(u.file);
-      found.push({ ...u, scope, ledgered: gateBundle.ledgerState(root) !== 'none' });
+      const key = path.join(canonical(path.dirname(u.file)).path, path.basename(u.file));
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ ...u, scope });
     }
   }
-  if (!found.length) return null;
-  const fixes = found.map((u) => {
-    if (u.kind === 'manifest' && u.ledgered) {
-      return `reinstall the ${u.scope} copy in place: gsd-tools capability install npm:@taoc/gsd-memanto@${version} --yes${u.scope === 'project' ? ' --scope project' : ''}`;
-    }
-    if (u.kind === 'manifest') return `move ${u.file} aside (no ${u.scope} ledger lists that copy)`;
-    return `move ${u.file} aside, then reinstall memanto in ${u.scope} scope (gsd-core cannot read that ledger either)`;
-  });
-  return record(
-    'unreadable-files',
-    'error',
-    clean(`${found.map((u) => u.reason).join('; ')}; doctor and gsd-core read only small regular files there, so doctor treats it as invalid and never reads it`, REASON_MAX * 2),
-    clean(fixes.join('; '), REASON_MAX * 2),
-  );
+  return out;
 }
 
 const isMemantoGate = (h) => Boolean(h && h.capId === 'memanto' && h.kind === 'gate');
@@ -279,7 +269,7 @@ const pinsOf = (cmd) => (String(cmd).match(PIN) || []).map((x) => x.slice('npm:@
 // not depend on the release version, so the release bump never touches it.
 // test/gate-bundle.test.cjs fails when capability.json changes the command
 // without updating this constant; test/release.test.cjs runs the bump.
-const SHIPPED_GATE_COMMAND_SHA256 = '718039219206da78b2b7ce250262212e9e547fc3889ed6ed08c38275df8cea68';
+const SHIPPED_GATE_COMMAND_SHA256 = '1de8fa5b64c3e3be8fc494dda8be63f329c741a9adcbc5f450f5e563396e8bc7';
 const sha256 = (s) => crypto.createHash('sha256').update(String(s), 'utf8').digest('hex');
 
 // The fields in which a rendered hook differs from the shipped gate:
@@ -453,10 +443,12 @@ function gatherEvidence({ scopeDirs, roots, rows, renders, enabled = true, manif
     },
     reasons: renders.length ? loadFailureReasons(rhs) : [],
     enabled,
+    unreadable: unreadableEvidence(roots),
   };
 }
 
-// installRecords cleans with a length factor: 2 for messages, 3 for fixes.
+// installRecords cleans with a length factor: 2 for messages, 3 for fixes, 4
+// for unreadable-files, which lists every unreadable file (1200 characters).
 function cleanFactor(text, factor) {
   return clean(text, factor === 3 ? 600 : REASON_MAX * factor);
 }
@@ -507,14 +499,18 @@ function collectChecks(cwd) {
 
   let listFailure = null;
   // Round-9 CR-01: gsd-core reads .planning/config.json with a plain read, so
-  // with a FIFO or device there every capability list and render-hooks call
-  // blocks until PROBE_TIMEOUT_MS. Doctor does not start them; it reports why.
-  const hostBlocked = !cfg.ok && cfg.kind === 'read' && cfg.code === 'ENOTREG';
-  if (located.ok && hostBlocked) {
+  // with a FIFO there, or a device that never ends, every capability list and
+  // render-hooks call blocks until PROBE_TIMEOUT_MS. Doctor does not start
+  // them; it reports why. Round-10 IN-01: only then. A directory, socket or a
+  // device that ends (/dev/null) does not block gsd-core, so doctor queries it
+  // and config-unreadable reports the actual condition.
+  const blocks = !cfg.ok && cfg.kind === 'read' && cfg.code === 'ENOTREG' ? plainReadBlocks(cfg.path, CONFIG_MAX_BYTES) : null;
+  if (located.ok && blocks) {
+    const why = blocks === 'fifo' ? 'a FIFO, which blocks until a writer opens it' : `a device whose read never ends (it has no data yet, or more than ${CONFIG_MAX_BYTES} bytes)`;
     listFailure = record(
       'capability-list',
       'error',
-      clean(`doctor did not query gsd-core (capability list, render-hooks): ${cfg.error}, and gsd-core blocks reading it`, REASON_MAX),
+      clean(`doctor did not query gsd-core (capability list, render-hooks): ${cfg.error}; gsd-core reads that file whole, and it is ${why}`, REASON_MAX * 2),
       clean(`replace ${cfg.path} with a regular JSON file, then run doctor again`, REASON_MAX),
     );
   } else if (located.ok) {
@@ -549,13 +545,12 @@ function collectChecks(cwd) {
   // consent, duplicate-install and gate-bundle all come from that one result.
   const cls = classifyInstall(gatherEvidence({ scopeDirs, roots, rows, renders, enabled, manifests, shipped }));
   const recs = installRecords(cls, { version: ownVersion(), reinstall: reinstallFix(), clean: cleanFactor });
-  const unreadable = unreadableCheck(scopeDirs, roots, ownVersion());
   // Round-9 IN-03: built after the classification, so a no-reason render fix
   // is the loaded record's own remedy (the reinstall of the copy it names).
   const renderChecks = rendered.map((r) => renderCheck(r.point, r.rh, shipped, recs.loaded.fix));
 
   if (listFailure) checks.push(listFailure);
-  if (unreadable) checks.push(unreadable);
+  if (recs.unreadable) checks.push(recs.unreadable);
   // Round-9 IN-01: with memanto disabled, loaded is a warn (see the README).
   if (located.ok) checks.push(recs.loaded);
   if (listOk) {

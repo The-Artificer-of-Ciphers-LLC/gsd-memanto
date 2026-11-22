@@ -36,8 +36,10 @@ const row = (scope, status = 'active', reason) => ({ id: 'memanto', scope, statu
 //   hook / gate       a memanto hook / the memanto gate rendered (gate defaults to hook)
 //   same              'text': GSD_HOME is the project root; 'alias': a symlink to it
 //   demoted           gsd-core demotes the global root to project scope (default with same)
+//   unread            [{ scope, kind: 'manifest'|'ledger', cause, what }]: files that exist but
+//                     cannot be read, with the scope doctor found them in (global first)
 function raw(o = {}) {
-  const r = { g: false, p: false, rows: [], ran: true, hook: false, reasons: [], enabled: true, ...o };
+  const r = { g: false, p: false, rows: [], ran: true, hook: false, reasons: [], enabled: true, unread: [], ...o };
   r.gLed = o.gLed || (o.gInst ? 'committed' : 'none');
   r.pLed = o.pLed || (o.pInst ? 'committed' : 'none');
   r.gate = o.gate !== undefined ? o.gate : r.hook;
@@ -47,6 +49,9 @@ function raw(o = {}) {
   r.pGate = o.pGate === undefined ? r.p : o.pGate;
   return r;
 }
+
+const rootOf = (dir) => dir.replace(/\/\.gsd\/capabilities\/memanto$/, '');
+const fileOf = (r, u) => (u.kind === 'manifest' ? `${r.dirs[u.scope]}/capability.json` : `${rootOf(r.dirs[u.scope])}/.gsd-capabilities.json`);
 
 // Evidence in the shape memanto.cjs gatherEvidence builds.
 function evOf(r) {
@@ -73,6 +78,7 @@ function evOf(r) {
     render: { ran: r.ran, hook: r.hook, gate: r.gate, ...(r.mismatch ? { mismatch: r.mismatch } : {}) },
     reasons: r.reasons,
     enabled: r.enabled,
+    unreadable: r.unread.map((u) => ({ scope: u.scope, kind: u.kind, file: fileOf(r, u), cause: u.cause, what: u.what || '', reason: `${fileOf(r, u)} is unreadable: ${u.what || u.cause}` })),
   };
 }
 
@@ -114,10 +120,16 @@ function factsOf(r, loadedScope) {
     onlyScope: copyScopes.length === 1 ? copyScopes[0] : undefined,
     unledgeredDirs: unledgered,
     rowsKnown: Array.isArray(r.rows),
+    copyScopes,
+    // The scope gsd-core gives the file: the one copy's scope when the roots alias.
+    unreadable: r.unread.map((u) => ({ file: fileOf(r, u), kind: u.kind, cause: u.cause, scope: r.same ? (r.demoted ? 'project' : 'global') : u.scope })),
+    ledgerFiles: [`${rootOf(r.dirs.global)}/.gsd-capabilities.json`, `${rootOf(r.dirs.project)}/.gsd-capabilities.json`],
+    unreadableLedgerScopes: ['global', 'project'].filter((s) => (s === 'global' ? r.gLed : r.pLed) === 'unreadable').map((s) => (r.same ? (r.demoted ? 'project' : 'global') : s)),
   };
 }
 
-const OPTS = { version: '0.1.0', reinstall: 'reinstall: gsd-tools capability install npm:@taoc/gsd-memanto@0.1.0 --yes' };
+// The same generic hint memanto.cjs reinstallFix gives (it names no scope).
+const OPTS = { version: '0.1.0', reinstall: 'reinstall: gsd-tools capability install npm:@taoc/gsd-memanto@0.1.0 --yes (add --scope project inside a project for project scope)' };
 const G = 'global';
 const P = 'project';
 
@@ -319,7 +331,95 @@ const CASES = [
   ['no render: global incompatible, project not consented', { g: true, p: true, gInst: true, pInst: true, rows: [row(G, 'incompatible'), row(P, 'inactive', 'no user consent record')], ran: false }, STATES.UNVERIFIED, null, (r) => {
     assert.match(r.loaded.fix, /re-consent/);
   }],
+  // Round-10 WR-02: unreadable files are evidence of the classifier, so their
+  // fixes use its scope model and a remedy that follows the cause.
+  ['project root is GSD_HOME, ledgered copy with an EACCES capability.json (r10a eacces)', { same: 'text', g: true, p: true, gInst: true, pInst: true, gBad: true, pBad: true, rows: [row(P)], unread: [{ scope: G, kind: 'manifest', cause: 'permission', what: 'EACCES: permission denied' }] }, STATES.BROKEN, null, (r) => {
+    const f = `${D.global}/capability.json`;
+    assert.ok(r.unreadable.fix.startsWith(`restore read permission on ${f}: chmod u+r ${f}`), r.unreadable.fix);
+    assert.ok(r.unreadable.fix.includes(`reinstall the project copy at ${D.global} in place: gsd-tools capability install npm:@taoc/gsd-memanto@0.1.0 --yes --scope project`), r.unreadable.fix);
+    for (const k of ['loaded', 'gateBundle', 'unreadable']) assert.ok(!/\bglobal copy\b/.test(r[k].fix), `${k}: ${r[k].fix}`);
+    assert.ok(r.loaded.fix.includes('--scope project'), r.loaded.fix);
+  }],
+  ['healthy global install next to a FIFO project ledger, no project copy (r10h ledgerfifo)', { g: true, gInst: true, rows: null, hook: true, unread: [{ scope: P, kind: 'ledger', cause: 'nonregular', what: 'a FIFO' }] }, STATES.GLOBAL_LOADED, G, (r) => {
+    assert.ok(r.unreadable.fix.startsWith('remove /p/.gsd-capabilities.json (it is a FIFO, not a real project capability ledger, so it holds no entries)'), r.unreadable.fix);
+    assert.ok(r.unreadable.fix.includes('memanto is not installed in project scope'), r.unreadable.fix);
+    assert.ok(!/capability install|reinstall/.test(r.unreadable.fix), r.unreadable.fix);
+  }],
+  ['unledgered project copy with a FIFO capability.json next to a global install (r9f)', { g: true, gInst: true, p: true, pBad: true, rows: [row(G)], hook: true, unread: [{ scope: P, kind: 'manifest', cause: 'nonregular', what: 'a FIFO' }] }, STATES.GLOBAL_LOADED, G, (r) => {
+    assert.ok(r.unreadable.fix.startsWith(`remove ${D.project}/capability.json (it is a FIFO, not a real capability.json)`), r.unreadable.fix);
+    assert.ok(r.unreadable.fix.includes('no project ledger lists that copy'), r.unreadable.fix);
+    assert.ok(!/capability install/.test(r.unreadable.fix), r.unreadable.fix);
+  }],
+  ['ledgered global install whose capability.json is a symlink to a device', { g: true, gInst: true, gBad: true, rows: [row(G)], unread: [{ scope: G, kind: 'manifest', cause: 'nonregular', what: 'a symlink to a device' }] }, STATES.BROKEN, null, (r) => {
+    assert.ok(r.unreadable.fix.startsWith(`remove ${D.global}/capability.json (it is a symlink to a device, not a real capability.json), then reinstall the global copy at ${D.global} in place: gsd-tools capability install npm:@taoc/gsd-memanto@0.1.0 --yes`), r.unreadable.fix);
+    assert.ok(!r.unreadable.fix.includes('--scope project'), r.unreadable.fix);
+  }],
+  ['ledgered project install with an oversized capability.json', { p: true, pInst: true, pBad: true, rows: [row(P)], unread: [{ scope: P, kind: 'manifest', cause: 'oversized', what: 'it is 2000000 bytes' }] }, STATES.BROKEN, null, (r) => {
+    assert.ok(r.unreadable.fix.startsWith(`inspect ${D.project}/capability.json`), r.unreadable.fix);
+    assert.ok(r.unreadable.fix.includes('--scope project'), r.unreadable.fix);
+  }],
+  // Round-10 WR-01: a ledger that exists but cannot be read is its own ledger
+  // state ('unreadable'), never "no entry": no record deletes the copy by hand.
+  ['global install whose global ledger is a FIFO, the gate renders (r10h2 gledgerfifo)', { g: true, gLed: 'unreadable', rows: null, hook: true, unread: [{ scope: G, kind: 'ledger', cause: 'nonregular', what: 'a FIFO' }] }, STATES.GLOBAL_LOADED, G, (r) => {
+    assert.equal(r.gateBundle.status, 'error', JSON.stringify(r.gateBundle));
+    assert.ok(r.gateBundle.message.includes('the discuss:pre gate cannot read the global capability ledger /h/.gsd-capabilities.json (a FIFO)'), r.gateBundle.message);
+    assert.ok(r.gateBundle.fix.startsWith('remove /h/.gsd-capabilities.json (it is a FIFO, not a real global capability ledger'), r.gateBundle.fix);
+    assert.equal(r.gateBundle.fix, r.unreadable.fix);
+    for (const k of ['loaded', 'gateBundle', 'unreadable']) assert.ok(!/\bdelete\b/.test(r[k].fix), `${k}: ${r[k].fix}`);
+  }],
+  // Round-10 mutation follow-up: a loaded copy with no shipped gate and an
+  // unreadable ledger repairs the ledger first; a reinstall alone would read it.
+  ['global gate does not match this release and the global ledger is a FIFO', { g: true, gLed: 'unreadable', rows: null, hook: true, gate: false, mismatch: 'command', unread: [{ scope: G, kind: 'ledger', cause: 'nonregular', what: 'a FIFO' }] }, STATES.GLOBAL_NO_GATE, G, (r) => {
+    for (const k of ['loaded', 'gateBundle']) {
+      assert.equal(r[k].status, 'error', JSON.stringify(r[k]));
+      assert.ok(r[k].fix.startsWith('remove /h/.gsd-capabilities.json (it is a FIFO, not a real global capability ledger'), `${k}: ${r[k].fix}`);
+      assert.ok(!/\bdelete\b/.test(r[k].fix), `${k}: ${r[k].fix}`);
+    }
+  }],
+  ['global install whose global ledger has no read permission (r10h ledgereacces)', { g: true, gLed: 'unreadable', rows: null, hook: true, unread: [{ scope: G, kind: 'ledger', cause: 'permission', what: 'EACCES: permission denied' }] }, STATES.GLOBAL_LOADED, G, (r) => {
+    assert.ok(r.gateBundle.message.includes('cannot read the global capability ledger /h/.gsd-capabilities.json'), r.gateBundle.message);
+    assert.ok(r.gateBundle.fix.startsWith('restore read permission on /h/.gsd-capabilities.json: chmod u+rw /h/.gsd-capabilities.json'), r.gateBundle.fix);
+    assert.equal(r.gateBundle.fix, r.unreadable.fix);
+  }],
+  ['global install, oversized global ledger, capability list readable but shows no row', { g: true, gLed: 'unreadable', rows: [], hook: true, unread: [{ scope: G, kind: 'ledger', cause: 'oversized', what: '9000000 bytes, more than the 8388608-byte limit' }] }, STATES.GLOBAL_LOADED, G, (r) => {
+    for (const k of ['loaded', 'consent', 'gateBundle']) {
+      assert.ok(r[k].fix.startsWith('inspect /h/.gsd-capabilities.json and restore it from a backup'), `${k}: ${r[k].fix}`);
+      assert.ok(r[k].fix.includes('drops the ledger entry of every other global capability'), `${k}: ${r[k].fix}`);
+    }
+    assert.ok(r.loaded.message.includes('its global capability ledger cannot be read'), r.loaded.message);
+    assert.ok(r.consent.message.includes('cannot be read'), r.consent.message);
+  }],
+  ['project install whose project ledger has no read permission, nothing renders', { p: true, pLed: 'unreadable', rows: null, unread: [{ scope: P, kind: 'ledger', cause: 'permission', what: 'EACCES' }] }, STATES.LEDGER_UNREADABLE, null, (r) => {
+    for (const k of ['loaded', 'gateBundle']) {
+      assert.equal(r[k].status, 'error', JSON.stringify(r[k]));
+      assert.ok(r[k].message.includes('its project capability ledger /p/.gsd-capabilities.json cannot be read'), r[k].message);
+      assert.ok(r[k].fix.startsWith('restore read permission on /p/.gsd-capabilities.json: chmod u+rw'), r[k].fix);
+    }
+  }],
+  ['two copies, the global ledger is not valid JSON, no render-hooks call succeeded', { g: true, p: true, gLed: 'unreadable', pInst: true, rows: [row(P)], ran: false, unread: [{ scope: G, kind: 'ledger', cause: 'invalid' }] }, STATES.LEDGER_UNREADABLE, null, (r) => {
+    assert.ok(r.loaded.fix.startsWith('inspect /h/.gsd-capabilities.json and restore it from a backup (it is not valid JSON)'), r.loaded.fix);
+    assert.ok(r.duplicate.fix.includes('inspect /h/.gsd-capabilities.json'), r.duplicate.fix);
+    assert.ok(!/capability remove/.test(r.duplicate.fix), r.duplicate.fix);
+  }],
 ];
+
+// Round-10 WR-02 (mutation): the shared rules catch an unreadable-files fix
+// in the wrong scope, a remedy that does not follow the cause, and a ledger
+// moved aside without the warning.
+test('the shared rules reject an unreadable-files record that disagrees with the classifier', () => {
+  const r = raw({ same: 'text', g: true, p: true, gInst: true, pInst: true, gBad: true, pBad: true, rows: [row(P)], unread: [{ scope: G, kind: 'manifest', cause: 'permission', what: 'EACCES' }] });
+  const recs = installRecords(classifyInstall(evOf(r)), OPTS);
+  const all = (u) => [recs.loaded, recs.consent, recs.duplicate, recs.gateBundle, u];
+  const f = `${D.global}/capability.json`;
+  const wrongScope = { ...recs.unreadable, fix: `reinstall the global copy in place: gsd-tools capability install npm:@taoc/gsd-memanto@0.1.0 --yes; restore read permission on ${f}: chmod u+r ${f}` };
+  assert.throws(() => assertConsistent(all(wrongScope), factsOf(r, null), 'scope'), /installs memanto in global scope|names the global copy|names a global copy|installs in global scope/);
+  const moved = { ...recs.unreadable, fix: `move ${f} aside` };
+  assert.throws(() => assertConsistent(all(moved), factsOf(r, null), 'cause'), /does not say "restore read permission|removes/);
+  const r2 = raw({ g: true, gLed: 'unreadable', rows: null, hook: true, unread: [{ scope: G, kind: 'ledger', cause: 'permission', what: 'EACCES' }] });
+  const recs2 = installRecords(classifyInstall(evOf(r2)), OPTS);
+  const aside = { ...recs2.unreadable, fix: `${recs2.unreadable.fix}; or move /h/.gsd-capabilities.json aside` };
+  assert.throws(() => assertConsistent([recs2.loaded, aside], factsOf(r2, G), 'aside'), /removes|moves the ledger/);
+});
 
 test('every state of the closed enum is covered by the table', () => {
   const covered = new Set(CASES.map((c) => c[2]));
@@ -333,7 +433,7 @@ for (const [name, o, state, loadedScope, extra] of CASES) {
     assert.equal(cls.state, state, JSON.stringify(cls));
     const recs = installRecords(cls, OPTS);
     // Round-9 IN-01: doctor prints loaded also when memanto is disabled (a warn).
-    assertConsistent([recs.loaded, recs.consent, recs.duplicate, recs.gateBundle], factsOf(r, loadedScope), name);
+    assertConsistent([recs.loaded, recs.consent, recs.duplicate, recs.gateBundle, recs.unreadable], factsOf(r, loadedScope), name);
     if (!r.enabled) {
       assert.equal(recs.loaded.status, 'warn', JSON.stringify(recs.loaded));
       assert.ok(recs.loaded.message.startsWith('memanto.enabled is not true, so gsd-core loads no memanto hook'), recs.loaded.message);
@@ -364,7 +464,9 @@ test('classifyInstall and installRecords are safe without optional arguments', (
   const cls = classifyInstall(undefined);
   assert.equal(cls.state, STATES.NONE);
   const recs = installRecords(cls);
-  for (const r of Object.values(recs)) assert.equal(typeof r.message, 'string');
+  // unreadable is null when no file is unreadable; every other record is always built.
+  assert.equal(recs.unreadable, null);
+  for (const r of Object.values(recs).filter(Boolean)) assert.equal(typeof r.message, 'string');
   assert.doesNotThrow(() => installRecords(classifyInstall({ manifest: { project: true }, dirs: D })));
 });
 

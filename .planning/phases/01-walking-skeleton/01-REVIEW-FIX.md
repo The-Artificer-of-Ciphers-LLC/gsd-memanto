@@ -1,17 +1,17 @@
 ---
 phase: 01-walking-skeleton
-fixed_at: 2026-11-22T13:20:00Z
+fixed_at: 2026-11-22T14:50:27Z
 review_path: .planning/phases/01-walking-skeleton/01-REVIEW.md
-iteration: 9
-findings_in_scope: 7
-fixed: 7
+iteration: 10
+findings_in_scope: 5
+fixed: 5
 skipped: 0
 status: all_fixed
 ---
 
-# Phase 1: Code Review Fix Report (rounds 4 to 9)
+# Phase 1: Code Review Fix Report (rounds 4 to 10)
 
-The frontmatter counts are for round 9 (the current 01-REVIEW.md): 7 findings, all fixed. See "Round 9" at the end. Round 9 changes the round-8 render point rule (`declaredPoints` is now `pointsToRender`) and the no-gate fixes described in "Round 8". Round 8 replaced the round-7 classifier evidence and states described in "Round 7". The round-4 report, its owner follow-ups and the round-5 and round-6 sections are kept below unchanged. Round 7 replaced the round-5 and round-6 doctor code they describe (`loadedCopy`, `notLoadedText`, `notLoadedFix`, `loadedCheck`, `gateBundleCheck`).
+The frontmatter counts are for round 10 (the current 01-REVIEW.md): 5 findings, all fixed. See "Round 10" at the end. Round 10 replaces the round-9 `unreadable-files` record and its fix, and the round-9 rule that skipped gsd-core for every non-regular config file (both described in "Round 9"). Round 9 changes the round-8 render point rule (`declaredPoints` is now `pointsToRender`) and the no-gate fixes described in "Round 8". Round 8 replaced the round-7 classifier evidence and states described in "Round 7". The round-4 report, its owner follow-ups and the round-5 and round-6 sections are kept below unchanged. Round 7 replaced the round-5 and round-6 doctor code they describe (`loadedCopy`, `notLoadedText`, `notLoadedFix`, `loadedCheck`, `gateBundleCheck`).
 
 **Fixed at:** 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5), 2026-11-22T03:21:45Z (round 6), 2026-11-22T03:41:23Z (round 7), 2026-11-22T05:10:00Z (round 8), 2026-11-22T13:20:00Z (round 9)
 **Source review:** .planning/phases/01-walking-skeleton/01-REVIEW.md, which is now round 9, the re-review of the round-8 fixes. Round 8 re-reviewed the round-7 fixes, and round 7 the round-6 fixes. Earlier rounds: round 4 re-reviewed the round-3 fixes, round 5 the round-4 fixes and owner follow-ups, and round 6 the round-5 fixes.
@@ -428,8 +428,113 @@ The runner is `scratchpad/r9fix/mutate9.cjs`, adapted from `r8/mutate8.cjs`. It 
 
 The shared rules alone catch R9_WR03_dup, so the new invariant would have caught WR-03. The other round-9 mutants are in doctor code that the classifier table does not reach, and the doctor repros catch them.
 
+## Round 10
+
+Round 10 fixes all five findings of the round-10 re-review (WR-01, WR-02, IN-01, IN-02, IN-03), on the owner's decision, test-first. The owner decided the release goes ahead without another review round. Each fix's tests failed on the commit before it. The counts below come from `test/install-state`, `gate-bundle` and `safe-read` of the fix commit, run on the code of the commit before it (`scratchpad/r10fix/red2.js`).
+
+| Commit | Finding | Red before the fix |
+|--------|---------|--------------------|
+| `67f2dcd` | WR-02 | 9 |
+| `7c7fcd3` | WR-01 | 13 |
+| `8fc590b` | IN-01 | 5 |
+| `aa0d278` | IN-02 | 12 |
+| `4c479dd` | IN-03 | none: a new end-to-end test of behaviour that already worked. Mutant `R10_IN03_pin` shows it catches a broken bump. |
+| `f02f73e` | WR-01, follow-up | a test-only commit that kills the one mutant the first run left alive (see below) |
+
+`npm test`: 551 tests, 550 pass, 0 fail, 1 skipped (the chmod-0 test, which skips only when chmod 0 does not deny the read). It is green on gsd-core 1.20.1 (`~/.claude/gsd-core`) and on 1.22.0 (`GSD_CORE_DIR` pointed at an npm copy in the scratchpad).
+
+The gates ran in the harness worktree `.claude/worktrees/agent-ae9b1ba121e2494d9`, not in the main checkout, with a temp `GSD_HOME` per test. The only network targets were the closed port, the fake API, and the reviewer repros' `GET /health`.
+
+### WR-02: unreadable-file handling moved into the classifier
+
+- `memanto.cjs unreadableEvidence` gathers each unreadable `capability.json` and ledger once, deduped by canonical directory, as the evidence field `unreadable` (`{file, kind, scope, cause, what, reason}`). The round-9 `unreadableCheck` is gone.
+- `classifyInstall` gives each file the scope it resolved: the one copy's scope when `GSD_HOME` is the project root, and otherwise the file's own scope. `installRecords` builds `unreadable-files` from that scope.
+- `lib/safe-read.cjs` now says what the file is (`what`, `type`, `symlink`). `lib/gate-bundle.cjs causeOf` maps each refusal to a cause.
+- Remedies by cause (`lib/install-state.cjs unreadableFix`):
+  - `permission`: restore read permission on the file (`chmod u+r[w]`, or `chown`), naming the file.
+  - `nonregular` (FIFO, socket, device, directory, symlink): remove that file (it is not a real ledger or manifest), then reinstall.
+  - `oversized` and `invalid`: inspect the file and restore it from a backup. For a ledger the text adds "do not move it aside: that drops the ledger entry of every other <scope> capability".
+- A project-scope remedy is given only for a project file, and a global remedy only for a global file.
+- The broken-install fix also puts the `chmod` first when the cause is a permission problem.
+- New shared invariants in `test/helpers/install-invariants.cjs`:
+  - `unreadable-files` names only scopes that have a copy, and the copies at their real directories.
+  - With one scope, `unreadable-files` and `loaded` name the same scope.
+  - The remedy verb matches the cause.
+  - No record removes, deletes or moves a file the classifier keeps.
+  - Moving a ledger aside must say it drops the other entries.
+
+### WR-01: an unreadable ledger is its own state
+
+- `lib/gate-bundle.cjs readLedger` returns `absent`, `unreadable` (refused, or not valid JSON) or `ok`. `ledgerState` now returns `unreadable` and never `none` for such a ledger.
+- The classifier has the new state `ledger-unreadable` (nothing renders, and a copy's ledger cannot be read). It is a load-error state.
+- `deleteFix` and the no-gate primary fix give the ledger repair (`ledgerFix`) for such a copy and never "delete by hand".
+- `loaded` warns when the loaded copy's ledger cannot be read. `consent` and `duplicate-install` say the ledger cannot be read.
+- `gate-bundle` says "the discuss:pre gate cannot read the <scope> capability ledger <file> (<what>)", with the same remedy as `unreadable-files`. The gate's own selection rule is unchanged and stays fail-closed.
+- The shared rules forbid "no <scope> ledger lists" and similar text for a scope whose ledger cannot be read.
+- Reviewer repros `r10h2 gledgerfifo` and `r10h ledgereacces` are tests: no record says delete, and `gate-bundle` gives the `unreadable-files` remedy.
+
+### IN-01: a non-regular config.json skips gsd-core only when gsd-core would block
+
+- This was checked against the 1.20.1 host (`scratchpad/r10fix/cfgprobe.js`):
+  - These block `capability list` and `render-hooks` until killed: a FIFO, a symlink to a FIFO, and `/dev/zero`.
+  - These do not: a directory (EISDIR warning), a socket and `/dev/null` (invalid-JSON warning).
+- New `lib/safe-read.cjs plainReadBlocks(file, maxBytes)` returns `fifo`, `device` or null. It probes a device with a bounded non-blocking read, and reads nothing else.
+- Doctor skips the host calls only for `fifo` or `device`. Its `capability-list` text names which one.
+- In every other case doctor queries gsd-core, and `config-unreadable` reports what the file is.
+- `README.md` (the round-10 line 188) now says this.
+
+### IN-02: the inline predicate
+
+- `j` opens one descriptor with `O_NONBLOCK` and checks it with `fstat`: a regular file of at most 8 MiB for a ledger and 1 MiB for a `capability.json`, the lib's caps. It reads that descriptor only, never the path again.
+- New MATRIX rows (an oversized global ledger, an oversized global `capability.json`) keep the predicate and `resolveGateBundle` in agreement.
+- The `[gate-bundle]` text depends on the ledger:
+  - An unreadable global ledger gets its repair ("keep the bundle").
+  - A ledgered copy gets "reinstall it in place".
+  - Only a copy with no ledger entry keeps "delete that directory by hand".
+- The predicate is 2489 characters and POSIX sh. `SHIPPED_GATE_COMMAND_SHA256` is updated, and the inline-vs-lib agreement tests are green.
+- The README now says that doctor and `lib/` read through `lib/safe-read.cjs`, and that the predicate carries its own compact copy of the same protocol.
+
+### IN-03: release rehearsal
+
+New `test/release-rehearsal.test.cjs` runs the release end to end. It does not need a repository.
+
+1. It copies the npm `files` whitelist.
+2. It runs the publish.yml "Bump the version" `run:` block as written (bash, `BUMP=patch`, temp `GITHUB_OUTPUT`, and a stub `git` with no tags).
+3. It installs the bumped bundle with the real host into a temp `GSD_HOME`, in global and in project scope.
+4. Both doctor forms exit 0, with `loaded`, `render:discuss:pre` and `gate-bundle` ok. `check predicate` gives `block:false`.
+5. With an empty `agent_id`, the gate blocks with `[agent-id]` and both doctor forms exit 1.
+
+It uses the host that `GSD_CORE_DIR` names. A test checks that `ci.yml` runs `npm test` on a matrix that includes the `engines.gsd` floor and has two or more versions.
+
+### Mutation run
+
+The runner is `scratchpad/r10fix/mutate10.cjs`, adapted from `r9fix/mutate9.cjs`. It works on temp copies of the tree.
+
+- The full run covers `install-state`, `gate-bundle`, `safe-read`, `render-points`, `doctor`, `release` and `release-rehearsal`. The shared run is the table with every per-case assertion stripped.
+- A `capability.json` mutant also gets its own hash pin, so only the predicate's behaviour can kill it.
+- RED: the base `cc96514` with the round-10 tests fails 35.
+- The unmutated tree: full 0, shared 0.
+- The first run caught 13 of 14 mutants. `R10_WR01_nogate` survived. It removes the unreadable-ledger guard in the no-gate primary fix, and the copy then got a plain in-place reinstall. It is not an equivalent mutant, because an unreadable ledger counts as ledgered. The table case added in `f02f73e` kills it (full 1). All 14 are now caught.
+
+| Mutant | What it reverts | Shared-rules table failures | Full run failures |
+|--------|-----------------|-----------------------------|-------------------|
+| R10_WR01_none | `ledgerState` gives `none` for an unreadable ledger | 0 | 7 |
+| R10_WR01_state | no `ledger-unreadable` state | 1 | 2 |
+| R10_WR01_delete | `deleteFix` without the ledger guard | 0 | 8 |
+| R10_WR01_nogate | no-gate fix without the ledger guard | 0 | 0, then 1 after `f02f73e` |
+| R10_WR02_scope | the file's own scope when `GSD_HOME` is the project root | 0 | 2 |
+| R10_WR02_swap | permission and non-regular remedies swapped | 8 | 13 |
+| R10_WR02_moveaside | a ledger "move it aside and reinstall" | 0 | 1 |
+| R10_WR02_record | no `unreadable-files` record | 0 | 8 |
+| R10_IN01_any | every non-regular config skips gsd-core | 0 | 3 |
+| R10_IN01_device | `/dev/zero` treated as ending | 0 | 2 |
+| R10_IN02_cap | no size cap in the predicate | 0 | 4 |
+| R10_IN02_nonblock | the predicate opens without `O_NONBLOCK` | 0 | 5 |
+| R10_IN02_delete | "delete by hand" for an unreadable ledger | 0 | 7 |
+| R10_IN03_pin | the bump step leaves the reinstall pin behind | 0 | 6 |
+
 ---
 
-_Fixed: 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5), 2026-11-22T03:21:45Z (round 6), 2026-11-22T03:41:23Z (round 7), 2026-11-22T05:10:00Z (round 8), 2026-11-22T13:20:00Z (round 9)_
+_Fixed: 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5), 2026-11-22T03:21:45Z (round 6), 2026-11-22T03:41:23Z (round 7), 2026-11-22T05:10:00Z (round 8), 2026-11-22T13:20:00Z (round 9), 2026-11-22T14:50:27Z (round 10)_
 _Fixer: Claude (gsd-code-fixer)_
-_Iteration: 9_
+_Iteration: 10_
