@@ -162,10 +162,25 @@ function describeRow(r) {
 
 // Round-4 WR-01: gsd-core skipped one of two copies and doctor cannot tell which.
 function undeterminedText(loaded, scopeDirs) {
-  return `gsd-core skipped a memanto copy (${loaded.reasons.join('; ')}); doctor cannot tell whether it skipped the global copy at ${scopeDirs.global} or the project copy at ${scopeDirs.project}`;
+  return `gsd-core skipped a memanto copy (${describeReasons(loaded.reasons)}); doctor cannot tell whether it skipped the global copy at ${scopeDirs.global} or the project copy at ${scopeDirs.project}`;
 }
 
-function loadedCheck(rows, loaded, scopeDirs) {
+// Round-5 WR-01: renders succeeded and none held a memanto hook.
+function neitherLoadedText(failures) {
+  const why = failures && failures.length ? ` (${describeReasons(failures)})` : '';
+  return `gsd-core loaded neither memanto copy${why}; no memanto hook renders, so its gate does not run (fails open)`;
+}
+const NEITHER_FIX =
+  'fix the load error first (for example another capability that owns a memanto config key, skill, agent or command family); reinstalling or removing a memanto copy does not clear it';
+
+function loadedCheck(rows, loaded, scopeDirs, { noneLoaded = false, failures = null } = {}) {
+  const shown = rows.filter((r) => r.status === 'active').map((r) => r.scope);
+  const reported = Boolean(failures && failures.length);
+  if (noneLoaded && (shown.length || reported)) {
+    const list = shown.length ? `capability list shows memanto active in ${shown.join(' and ')} scope, but ` : '';
+    const fix = reported ? NEITHER_FIX : `fix the error the render checks report, or ${reinstallFix()}`;
+    return record('loaded', 'error', clean(`${list}${neitherLoadedText(failures)}`, REASON_MAX * 2), fix);
+  }
   if (loaded && loaded.scope === 'unknown') {
     return record('loaded', 'error', clean(undeterminedText(loaded, scopeDirs), REASON_MAX * 2), 'fix the load error the render checks report, or remove one of the two copies');
   }
@@ -268,7 +283,7 @@ function renderCheck(point, rh) {
   return record(id, 'error', `no memanto hook renders at ${point}; it is not enforced (fails open)${why}`, `fix the reported load error or ${reinstallFix()}`);
 }
 
-function duplicateCheck(scopeDirs, roots, loaded) {
+function duplicateCheck(scopeDirs, roots, loaded, noneLoaded = false) {
   const present = Object.entries(scopeDirs).filter(([, dir]) => dir && isFile(path.join(dir, 'capability.json')));
   const distinct = new Set(present.map(([, dir]) => path.resolve(dir)));
   if (present.length < 2 || distinct.size < 2) {
@@ -282,6 +297,15 @@ function duplicateCheck(scopeDirs, roots, loaded) {
     ? clean(`delete ${scopeDirs[unledgered]} by hand (no ${unledgered} ledger lists it, so gsd-tools capability remove cannot remove it; see gate-bundle)`, 600)
     : 'remove one copy: gsd-tools capability remove memanto --scope project (or --scope global)';
   // Round-4 WR-01: say which copy gsd-core keeps only when doctor knows it.
+  // Round-5 WR-01: when it loaded neither, removing a copy does not fix that.
+  if (noneLoaded) {
+    return record(
+      'duplicate-install',
+      'warn',
+      clean(`memanto is installed in both global (${scopeDirs.global}) and project (${scopeDirs.project}) scope; gsd-core loaded neither of them (see loaded)`, REASON_MAX * 2),
+      `fix the load error first (see loaded); then ${fix}`,
+    );
+  }
   let keeps;
   if (loaded && loaded.scope === 'global') keeps = 'gsd-core keeps the global one and skips the project one';
   else if (loaded && loaded.scope === 'project') keeps = 'gsd-core skipped the global one and loads the project one (see gate-bundle)';
@@ -295,16 +319,41 @@ function duplicateCheck(scopeDirs, roots, loaded) {
 }
 
 // Every "capability "memanto" failed to load (<reason>)" warning gsd-core
-// printed while rendering hooks, one reason per skipped copy.
+// printed while rendering hooks, one entry per skipped copy. Round-5 WR-01:
+// one render-hooks call prints one warning per skipped copy, so the same reason
+// twice in one call means both copies were skipped for it. Repeats within a
+// call are kept; repeats across calls (several points) are not counted again.
+// The warnings list and stderr carry the same lines, so each call counts the
+// source that holds more of them.
 function loadFailureReasons(renders) {
-  const reasons = [];
+  const re = /capability "memanto" failed to load \((.*)\); its /;
+  const counts = new Map();
   for (const rh of renders) {
-    for (const line of [...rh.warnings, ...String(rh.stderr || '').split('\n')]) {
-      const m = /capability "memanto" failed to load \((.*)\); its /.exec(line);
-      if (m && !reasons.includes(m[1])) reasons.push(m[1]);
+    const tally = (lines) => {
+      const t = new Map();
+      for (const line of lines) {
+        const m = re.exec(line);
+        if (m) t.set(m[1], (t.get(m[1]) || 0) + 1);
+      }
+      return t;
+    };
+    const fromWarnings = tally(rh.warnings);
+    const fromStderr = tally(String(rh.stderr || '').split('\n'));
+    for (const reason of new Set([...fromWarnings.keys(), ...fromStderr.keys()])) {
+      const n = Math.max(fromWarnings.get(reason) || 0, fromStderr.get(reason) || 0);
+      counts.set(reason, Math.max(counts.get(reason) || 0, n));
     }
   }
+  const reasons = [];
+  for (const [reason, n] of counts) for (let i = 0; i < n; i++) reasons.push(reason);
   return reasons;
+}
+
+// Reasons for a message: each once, marked when it was reported for both copies.
+function describeReasons(reasons) {
+  const counts = new Map();
+  for (const r of reasons || []) counts.set(r, (counts.get(r) || 0) + 1);
+  return [...counts].map(([r, n]) => (n > 1 ? `${r} (reported for both copies)` : r)).join('; ');
 }
 
 const COLLIDES = /^id collides/;
@@ -343,8 +392,13 @@ const POST_COLLISION = new RegExp(`^(${POST_COLLISION_REASONS.map((p) => p.repla
 // POST_COLLISION) means the global copy is not loaded even when capability
 // list shows a ledgered global row as active, and a reason that either copy
 // could have is reported as undetermined, never guessed.
+// Round-5 WR-01: rendered says whether any memanto hook rendered (null when no
+// render succeeded). A post-collision reason proves only that the global copy
+// did not claim the id, not that the project copy loaded, so when renders
+// succeeded and none held a memanto hook, no copy is loaded.
 // { scope, dir } | { scope: 'unknown', dir: null, reasons } | null (no copy loaded)
-function loadedCopy({ rows, scopeDirs, roots, failures }) {
+function loadedCopy({ rows, scopeDirs, roots, failures, rendered = null }) {
+  if (rendered === false) return null;
   const list = rows || [];
   const projectActive = list.find((r) => r.scope === 'project' && r.status === 'active');
   const projectCopy = projectActive && scopeDirs.project ? { scope: 'project', dir: scopeDirs.project } : null;
@@ -374,13 +428,17 @@ const otherScope = (scope) => (scope === 'global' ? 'project' : 'global');
 // installed, nor any installed copy. It names the stray copy: a directory with
 // no committed ledger entry is deleted by hand, because gsd-tools capability
 // remove only removes ledgered installs.
-function gateBundleCheck(loaded, scopeDirs, roots, failures = null) {
+function gateBundleCheck(loaded, scopeDirs, roots, failures = null, noneLoaded = false) {
   const resolved = gateBundle.resolveGateBundle(roots);
   const installed = {
     global: gateBundle.isInstalledBundle(roots.gsdHome),
     project: gateBundle.isInstalledBundle(roots.projectRoot),
   };
   const keep = (scope) => (installed[scope] ? `; keep the installed ${scope} bundle at ${scopeDirs[scope]}` : '');
+  if (noneLoaded) {
+    // Round-5 WR-01: no memanto hook renders, so no discuss:pre gate runs at all.
+    return record('gate-bundle', 'error', clean(neitherLoadedText(failures), REASON_MAX * 2), NEITHER_FIX);
+  }
   if (loaded && loaded.scope === 'unknown') {
     // Round-4 WR-01: fail closed when doctor cannot tell which copy loads.
     return record(
@@ -395,7 +453,7 @@ function gateBundleCheck(loaded, scopeDirs, roots, failures = null) {
     // (failed validation, an invalid fragment, a clash, outside engines.gsd) and
     // loads the project one. Round-4 WR-01: the loader's reasons, when reported.
     const other = otherScope(loaded.scope);
-    const why = failures && failures.length ? ` (gsd-core skipped the ${other} copy: ${failures.join('; ')})` : '';
+    const why = failures && failures.length ? ` (gsd-core skipped the ${other} copy: ${describeReasons(failures)})` : '';
     return record(
       'gate-bundle',
       'error',
@@ -487,7 +545,8 @@ function collectChecks(cwd) {
   const { enabled, rec } = enabledCheck(cfg);
   checks.push(rec);
 
-  const loadedNow = () => loadedCopy({ rows, scopeDirs, roots, failures });
+  let rendered = null;
+  const loadedNow = () => loadedCopy({ rows, scopeDirs, roots, failures, rendered });
 
   if (located.ok) {
     const opts = { cwd, env };
@@ -506,7 +565,9 @@ function collectChecks(cwd) {
           renderChecks.push(renderCheck(point, rh));
         }
         failures = renders.length ? loadFailureReasons(renders) : null;
-        checks.push(loadedCheck(rows, loadedNow(), scopeDirs));
+        // Round-5 WR-01: whether any memanto hook rendered (null: no render succeeded).
+        rendered = renders.length ? renders.some((rh) => rh.hooks.some((h) => h && h.capId === 'memanto')) : null;
+        checks.push(loadedCheck(rows, loadedNow(), scopeDirs, { noneLoaded: rendered === false, failures }));
       }
       checks.push(consentCheck(rows, scopeDirs));
       checks.push(enginesCheck(rows, scopeDirs, located.version));
@@ -516,8 +577,10 @@ function collectChecks(cwd) {
   // rows is null when capability list could not be read; loadedCopy then
   // decides only what the remaining evidence proves.
   const loaded = loadedNow();
-  checks.push(duplicateCheck(scopeDirs, roots, loaded));
-  checks.push(gateBundleCheck(loaded, scopeDirs, roots, failures));
+  // Round-5 WR-01: gsd-core skipped every memanto copy it found and said why.
+  const neither = rendered === false && Boolean(failures && failures.length);
+  checks.push(duplicateCheck(scopeDirs, roots, loaded, neither));
+  checks.push(gateBundleCheck(loaded, scopeDirs, roots, failures, neither));
   checks.push(discussBypassCheck(cfg));
   if (enabled) checks.push(...gateChecks(cwd));
   return checks;
