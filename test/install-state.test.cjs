@@ -196,7 +196,11 @@ const CASES = [
   }],
   ['two installs, the global declares no gate and holds the id (r8 twonogate)', { g: true, p: true, gInst: true, pInst: true, gNoGate: true, rows: [row(G), row(P)], reasons: [COLL] }, STATES.GLOBAL_NO_GATE, G, (r) => {
     assert.ok(r.duplicate.message.includes('gsd-core keeps the global one, which renders no memanto gate'), r.duplicate.message);
-    assert.ok(r.loaded.fix.includes('reinstall it in place'), r.loaded.fix);
+    assert.ok(r.loaded.fix.includes('in place'), r.loaded.fix);
+    // Round-9 WR-03: the load error comes first, and the healthy project install is kept.
+    assert.ok(r.duplicate.fix.startsWith('fix the load error first (see loaded)'), r.duplicate.fix);
+    assert.ok(r.duplicate.fix.includes(`the global copy at ${D.global}`) && r.duplicate.fix.includes('in place'), r.duplicate.fix);
+    assert.ok(r.duplicate.fix.includes(`keep the project copy at ${D.project}`), r.duplicate.fix);
   }],
   ['two installs, the global is silently rejected and the project gate renders (r8 twoinvalid)', { g: true, p: true, gInst: true, pInst: true, gNoGate: true, rows: [row(G), row(P)], hook: true }, STATES.PROJECT_LOADED, P, (r) => {
     assert.equal(r.gateBundle.status, 'error', JSON.stringify(r.gateBundle));
@@ -223,6 +227,9 @@ const CASES = [
   }],
   ['project copy loads, renders no gate',{ g: true, p: true, gInst: true, pInst: true, pNoGate: true, rows: [row(G, 'incompatible'), row(P)], hook: true, gate: false }, STATES.PROJECT_NO_GATE, P, (r) => {
     assert.ok(r.loaded.message.includes(`gsd-core loaded the project memanto copy at ${D.project}, but it renders no memanto gate`), r.loaded.message);
+    // Round-9 WR-03, the mirror case.
+    assert.ok(r.duplicate.fix.startsWith('fix the load error first (see loaded)'), r.duplicate.fix);
+    assert.ok(r.duplicate.fix.includes(`keep the global copy at ${D.global}`), r.duplicate.fix);
   }],
   ['installed global renders nothing and gives no reason (r6 IN-01)', { g: true, gInst: true, rows: [row(G)] }, STATES.UNEXPLAINED, null, (r) => {
     assert.ok(r.gateBundle.message.includes('printed no load error'), r.gateBundle.message);
