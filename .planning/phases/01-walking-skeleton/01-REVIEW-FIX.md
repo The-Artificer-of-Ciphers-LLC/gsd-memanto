@@ -1,19 +1,21 @@
 ---
 phase: 01-walking-skeleton
-fixed_at: 2026-11-22T02:31:45Z
+fixed_at: 2026-11-22T03:11:38Z
 review_path: .planning/phases/01-walking-skeleton/01-REVIEW.md
-iteration: 4
-findings_in_scope: 5
-fixed: 5
+iteration: 5
+findings_in_scope: 3
+fixed: 3
 skipped: 0
 status: all_fixed
 ---
 
-# Phase 1: Code Review Fix Report (round 4)
+# Phase 1: Code Review Fix Report (rounds 4 and 5)
 
-**Fixed at:** 2026-11-22T02:31:45Z
-**Source review:** .planning/phases/01-walking-skeleton/01-REVIEW.md (round 4, re-review of the round-3 fixes)
-**Iteration:** 4
+The frontmatter counts are for round 5 (the current 01-REVIEW.md): 3 findings, all fixed. See "Round 5" at the end. The round-4 report and its owner follow-ups are kept below unchanged.
+
+**Fixed at:** 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5)
+**Source review:** .planning/phases/01-walking-skeleton/01-REVIEW.md (round 4, re-review of the round-3 fixes; now round 5, re-review of the round-4 fixes and owner follow-ups)
+**Iteration:** 4, then 5
 
 Earlier rounds:
 - Round 1 (14 findings, all fixed): commits `851e2c2..d684020`.
@@ -88,8 +90,58 @@ The owner answered the two human checks above after round 4 was merged into main
 **Files:** `memanto.cjs`, `test/loader-drift.test.cjs` (new)
 **Applied change:** `POST_COLLISION` is now built from an exported, ordered `POST_COLLISION_REASONS` list. `test/loader-drift.test.cjs` reads `<GSD_CORE_DIR or ~/.claude/gsd-core>/bin/lib/capability-loader.cjs` as text, so the builtin-only `require()` test stays green. It collects every `skip('...')` reason in source order. It fails with a named message in three cases: a listed reason now comes before the `id collides` check; the loader has a new reason after that check; or the order no longer matches the list. `overlay processing error` is allowed only while it sits in the per-candidate `catch` block, because that block can run at any stage. The test passes against the local 1.20.1 loader and against the 1.22.0 loader read from `npm pack @opengsd/gsd-core@1.22.0`. The two loaders give the same skip reasons in the same order, at the same lines (680 to 906). Three mutated copies of the loader all fail with the expected message: a reason moved early, two reasons swapped, and a new reason. The CI matrix (`gsd: ["1.20.1", "1.22.0"]`) runs the test against both releases through `GSD_CORE_DIR`.
 
+## Round 5
+
+**Source review:** `01-REVIEW.md` round 5 (WR-01, WR-02, IN-01; no criticals). The branch was first fast-forwarded to main (`75fe09f`). Owner rule: fix every finding, no deferrals. Each fix was written test-first: the new or changed tests failed before the code change and passed after it.
+
+**Summary:** 3 in scope, 3 fixed, 0 skipped. Verification ran in this agent worktree (`.claude/worktrees/agent-a4925451f902d53d9`). `npm test`: 422 tests, 421 pass, 0 fail, 1 skipped. Every host run used a temp `GSD_HOME`. No Memanto server was contacted. Versions stay `0.1.0`.
+
+| Finding | Commit | Files | Status |
+|---------|--------|-------|--------|
+| WR-01 | `11c9189` | `memanto.cjs`, `test/gate-bundle.test.cjs` | fixed: requires human verification (logic) |
+| WR-02 | `9e8465c` | `test/loader-drift.test.cjs` | fixed |
+| IN-01 | `66755b1` | `lib/health.cjs`, `lib/checks.cjs`, `README.md`, `test/health.test.cjs`, `test/doctor.test.cjs` | fixed |
+
+### WR-01: doctor said gsd-core loads the project copy when gsd-core skipped both copies
+
+**Commit:** `11c9189`
+**Applied fix:** `collectChecks` now records whether any memanto hook rendered (`null` when no render succeeded) and passes it to `loadedCopy`. `loadedCopy` returns `null` when renders succeeded and none held a memanto hook. A post-collision reason now only shows that the global copy did not claim the id. When gsd-core skipped every copy and printed reasons:
+- `loaded` is an error: "capability list shows memanto active in ... scope, but gsd-core loaded neither memanto copy (<reasons>); no memanto hook renders, so its gate does not run (fails open)".
+- `gate-bundle` is an error with the same text.
+- `duplicate-install` says "gsd-core loaded neither of them (see loaded)".
+
+Every fix points at the load error first, for example another capability that owns a memanto config key. None of them suggests a reinstall as the cure. `loadFailureReasons` no longer merges identical warnings from one render-hooks call, because two warnings in one call mean both copies were skipped. Repeats across render points are still counted once. Messages show such a reason once, marked "(reported for both copies)".
+
+The reviewer's squat repro (`aaa-squat` owns `memanto.enabled`) is now a test in `test/gate-bundle.test.cjs`. It asserts that `loaded` and `gate-bundle` are errors, that no record claims a loaded copy, and that no fix offers a reinstall without the load error. `loadedCopy` unit cases cover `rendered: false` (one or two post-collision reasons, a mixed pre/post pair, or no reasons) and `rendered: true`. The reviewer's script run against this worktree gives the same results, and doctor exits 1.
+
+### WR-02: the loader drift test checked only the skip order
+
+**Commit:** `9e8465c`
+**Applied fix:** `test/loader-drift.test.cjs` adds a test that reads the loader source and checks two more facts:
+1. In `function overlayRoots`, `add(globalDir, ...)` comes before `add(projectDir, ...)`.
+2. The collision check reads `acceptedIds.has(id)`, and there is exactly one `acceptedIds.add(`, placed after the last listed `POST_COLLISION` reason.
+
+Each failure message names `memanto.cjs loadedCopy`. Results:
+- Passes on `~/.claude/gsd-core` (1.20.1) and on the 1.22.0 loader. Both have the global add at line 290, the project add at 292, the collision check at 690 and `acceptedIds.add` at 879.
+- Fails on the reviewer's two-mutation loader (`scratchpad/r5/core`) with the root-order message.
+- Fails on each single mutation:
+  - the root order swapped;
+  - an extra `acceptedIds.add` right after the collision check (found 2);
+  - the only `acceptedIds.add` moved before the last post-collision check.
+
+### IN-01: the curl hint ran a different command when pasted into a shell
+
+**Commit:** `66755b1`
+**Applied fix:**
+- The base-path placeholder is now the plain word `BASE_PATH` (it was `<base path>`, which a shell reads as redirects).
+- The curl hint single-quotes the URL: `curl -fsS 'http://host:port/BASE_PATH/health'`. The quotes also stop the brackets of an IPv6 host from globbing.
+- A new test extracts the hint from the gate line for a URL with a base path and userinfo, for a URL with no base path, and for an IPv6 host. It asserts that the hint has balanced single quotes, no shell metacharacter outside them, and the exact shape `curl -fsS '<...>/health'`.
+- Existing display, health-line and doctor tests expect `BASE_PATH`.
+- The README `backend-health` and `api-health` rows and the sample BLOCKED line show the quoted form.
+- The longest gate line still fits `LINE_MAX`.
+
 ---
 
-_Fixed: 2026-11-22T02:31:45Z_
+_Fixed: 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5)_
 _Fixer: Claude (gsd-code-fixer)_
-_Iteration: 4_
+_Iteration: 5_
