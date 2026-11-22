@@ -1,21 +1,21 @@
 ---
 phase: 01-walking-skeleton
-fixed_at: 2026-11-22T03:21:45Z
+fixed_at: 2026-11-22T03:41:23Z
 review_path: .planning/phases/01-walking-skeleton/01-REVIEW.md
-iteration: 6
-findings_in_scope: 2
-fixed: 2
+iteration: 7
+findings_in_scope: 4
+fixed: 4
 skipped: 0
 status: all_fixed
 ---
 
-# Phase 1: Code Review Fix Report (rounds 4 to 6)
+# Phase 1: Code Review Fix Report (rounds 4 to 7)
 
-The frontmatter counts are for round 6 (the current 01-REVIEW.md): 2 findings, both fixed. See "Round 6" at the end. The round-4 report, its owner follow-ups and the round-5 section are kept below unchanged.
+The frontmatter counts are for round 7 (the current 01-REVIEW.md): 4 findings, all fixed. See "Round 7" at the end. The round-4 report, its owner follow-ups and the round-5 and round-6 sections are kept below unchanged. Round 7 replaced the round-5 and round-6 doctor code they describe (`loadedCopy`, `notLoadedText`, `notLoadedFix`, `loadedCheck`, `gateBundleCheck`).
 
-**Fixed at:** 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5), 2026-11-22T03:21:45Z (round 6)
-**Source review:** .planning/phases/01-walking-skeleton/01-REVIEW.md (round 4, re-review of the round-3 fixes; round 5, re-review of the round-4 fixes and owner follow-ups; now round 6, re-review of the round-5 fixes)
-**Iteration:** 4, then 5, then 6
+**Fixed at:** 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5), 2026-11-22T03:21:45Z (round 6), 2026-11-22T03:41:23Z (round 7)
+**Source review:** .planning/phases/01-walking-skeleton/01-REVIEW.md, which is now round 7, the re-review of the round-6 fixes. Earlier rounds: round 4 re-reviewed the round-3 fixes, round 5 the round-4 fixes and owner follow-ups, and round 6 the round-5 fixes.
+**Iteration:** 4, then 5, 6 and 7
 
 Earlier rounds:
 - Round 1 (14 findings, all fixed): commits `851e2c2..d684020`.
@@ -178,8 +178,95 @@ The two-copy squat test is kept, and it now also asserts the clash fix. The revi
 **Commit:** `8b1ccc7`
 **Applied fix:** `gateBundleCheck` now takes the render evidence itself (`rendered`: true, false or null) instead of a flag that `collectChecks` had already filtered on the presence of reasons. `rendered === false` is an error, whether or not gsd-core printed a reason, and `failures` only feed the message. `collectChecks` passes `rendered`, and `duplicate-install` gets `rendered === false`. The `ok` record "the discuss:pre gate runs the installed bundle gsd-core loads" is now reachable only when a memanto hook rendered or no render ran. `loadedCheck` and `gateBundleCheck` are exported for a new unit test. With renders succeeding, no hook and no reason, that test asserts that both records are errors, that neither claims a load, and that both name "gsd-core did not load the global memanto copy at <dir> and printed no load error". It also asserts that `rendered: true` and `null` still give `ok`.
 
+## Round 7
+
+**Source review:** `01-REVIEW.md` round 7 (WR-01, WR-02, IN-01, IN-02; no criticals). The branch was first fast-forwarded to main (`8106fe3`).
+
+**Approach (coordinator direction for this round):** fix all four findings by restructuring, not by patching. Since round 4, every round found a new contradiction between `loaded`, `gate-bundle`, `duplicate-install` and `consent`, because each of those records derived the install and load state on its own. There is now one classifier, and all four records are built from its result. The coordinator allowed a single commit for this round.
+
+**Summary:** 4 in scope, 4 fixed, 0 skipped. Verification ran in this agent worktree (`.claude/worktrees/agent-a4925451f902d53d9`). `npm test`: 464 tests, 463 pass, 0 fail, 1 skipped. Every host run used a temp `GSD_HOME`. No Memanto server was contacted. Versions stay `0.1.0`.
+
+| Finding | Commit | Files | Status |
+|---------|--------|-------|--------|
+| WR-01, WR-02, IN-01, IN-02 | `4f88076` | `lib/install-state.cjs` (new), `memanto.cjs`, `README.md`, `test/install-state.test.cjs` (new), `test/helpers/install-invariants.cjs` (new), `test/gate-bundle.test.cjs`, `test/loader-drift.test.cjs`, `test/bundle.test.cjs` | fixed: requires human verification (logic) |
+
+### The classifier
+
+**Evidence.** `memanto.cjs gatherEvidence` reads every input once:
+- for both scope directories: whether each holds `capability.json` and `scripts/gate.cjs`, and whether each is an installed bundle;
+- the bundle the gate runs (`resolveGateBundle`);
+- the `capability list` rows (`null` when the list is unreadable);
+- the render outcome: whether a render ran and whether any memanto hook rendered;
+- the loader's load-failure reasons, with repeats kept per render-hooks call;
+- `memanto.enabled`.
+
+**States.** `lib/install-state.cjs classifyInstall` is pure. It returns one state from a closed enum:
+- `none-installed`
+- `global-loaded`, `project-loaded`
+- `undetermined`
+- `global-skipped`, `project-skipped`, `both-skipped`
+- `global-accepted-no-hooks`
+- `project-not-activated`
+- `no-hooks-unexplained`
+
+It also returns the loaded copy, any stray gate code, and the reason classes. The reason classes are:
+- `ownership-clash`: `owns ` only.
+- `collision-with-accepted-global`: `id collides`.
+- `engines`.
+- `invalid`: validation, manifest, fragment, cross-capability and configHome failures.
+- `unknown`.
+
+Copies are counted by distinct directory. A project root equal to `GSD_HOME` is one copy.
+
+**Records.** `installRecords` builds all four records from that result through one message/fix table. The fixes come from four builders:
+- `primaryFix`
+- `deleteFix`, which never deletes a bundle that has a committed ledger entry; it reinstalls that copy in place instead
+- `consentFix`
+- the clash note
+
+`render:<point>` uses the same clash rule. The per-record helpers (`loadedCopy`, `loadedCheck`, `gateBundleCheck`) are gone. `memanto.cjs` exports only `gatherEvidence`, `classifyInstall`, `installRecords` and `STATES` for tests.
+
+### WR-01: stray gate code was masked when no hook rendered
+
+`gate-bundle` now reports stray or planted `scripts/gate.cjs` in every state, naming the directory. Its fix puts `delete <dir> by hand` first. This holds when nothing renders and when a reason is printed. For a hand-copied project bundle (`strayproj`), the classifier gives `project-not-activated`. The text is "gsd-core does not activate the project memanto copy at <dir> (no project capability ledger lists it; copied by hand?)", and it no longer implies a failed load. For `globalplusstray`, the stray project gate is named next to the engines skip.
+
+### WR-02: `id collides` was treated as an ownership clash
+
+`id collides` now has its own class, `collision-with-accepted-global`, because that reason means gsd-core accepted the global copy. When the accepted global copy renders no hook (`collide`), the state is `global-accepted-no-hooks`. `loaded` and `gate-bundle` then say "gsd-core loaded the global memanto copy at <dir>, but it renders no memanto hook (it holds the id, so gsd-core skipped the project copy ...)". The fix is the same in all four records:
+- For a hand-copied global copy: "delete <global dir> by hand ...; keep the installed project bundle at <dir>".
+- For an installed global copy: check `memanto.enabled`, or reinstall the global copy.
+
+The clash fix ("reinstalling or removing a memanto copy does not clear it") is now used only when every reason starts with `owns `.
+
+### IN-01: "neither" counted manifests
+
+"Neither" and "both" now count distinct directories, so `homeproj` reports "gsd-core did not load the global memanto copy at <dir>", and `duplicate-install` is ok.
+
+### IN-02: the mixed-reason fix was untested and the exported helpers threw
+
+A table row now covers the mixed case: a validation failure plus a squat. It asserts the reinstall fix together with "a reinstall does not clear the ownership clash", and that the clash-only text is absent. `classifyInstall(undefined)` and `installRecords(cls)` without options are tested and do not throw. The old helpers are no longer exported.
+
+### Tests
+
+- **Table test.** `test/install-state.test.cjs` has 30 cases that cover every enum value; a guard test fails if a state has no case. Each case checks the shared rules in `test/helpers/install-invariants.cjs`:
+  - every non-ok record has a fix;
+  - no record offers a reinstall while another says a reinstall or removal does not help, unless it names the ownership clash;
+  - "neither" and "both" appear only with two distinct copies;
+  - no fix deletes an installed bundle;
+  - stray gate code is always named by `gate-bundle`, with a delete fix;
+  - no record claims a load when no copy loaded;
+  - when `loaded` is an error, `gate-bundle` is an error too;
+  - `gate-bundle` is ok only when the gate runs the loaded copy and there is no stray code.
+- **Doctor repros.** In `test/gate-bundle.test.cjs`, each of these runs doctor end to end and applies the same rules, with the facts read from disk:
+  - the reviewer's r7 modes `strayproj`, `strayglobal`, `nothing`, `globalplusstray` and `collide`, and `homeproj` as its own test;
+  - the r6 modes `gengines`, `gsquat` and `psquat`;
+  - the r5 two-copy squat.
+
+  The reviewer's `r7.cjs` and `collide.cjs`, run against this worktree, give the same records, and doctor exits 1 in every mode.
+- **Drift test.** `test/loader-drift.test.cjs` now names `lib/install-state.cjs classifyInstall`. It also checks that the classifier applies the loader facts: with two copies and a hook rendered, each `POST_COLLISION` reason gives `project-loaded`, `id collides` gives `global-loaded`, and pre-collision reasons give `undetermined`. It passes on gsd-core 1.20.1 and 1.22.0. It fails on all six mutated loaders: early, swap, newreason, rootorder, earlyadd and moveadd.
+
 ---
 
-_Fixed: 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5), 2026-11-22T03:21:45Z (round 6)_
+_Fixed: 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5), 2026-11-22T03:21:45Z (round 6), 2026-11-22T03:41:23Z (round 7)_
 _Fixer: Claude (gsd-code-fixer)_
-_Iteration: 6_
+_Iteration: 7_
