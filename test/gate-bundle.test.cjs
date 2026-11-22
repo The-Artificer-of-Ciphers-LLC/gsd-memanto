@@ -824,6 +824,30 @@ const MATRIX = [
   ['project entry missing files', { project: { entry: { ...COMMITTED, files: undefined } } }, null],
 ];
 
+// Round-9 IN-02: the loader (capability-loader.cjs ledgerOverlayIds) treats an
+// entry as pending only when _pending is truthy; a present but falsy _pending
+// is neither pending nor committed.
+test('ledgerState: _pending counts only when truthy, as in the loader', () => {
+  const { ledgerState, isInstalledBundle } = require('../lib/gate-bundle.cjs');
+  const cases = [
+    [{ op: 'install' }, 'pending'],
+    [true, 'pending'],
+    [null, 'none'],
+    [false, 'none'],
+    [0, 'none'],
+    ['', 'none'],
+  ];
+  for (const [pending, want] of cases) {
+    const root = env.tmpDir('memanto-led-');
+    fixtureScope(root, { entry: { ...COMMITTED, _pending: pending } });
+    assert.equal(ledgerState(root), want, JSON.stringify(pending));
+    assert.equal(isInstalledBundle(root), false, JSON.stringify(pending));
+  }
+  const root = env.tmpDir('memanto-led-');
+  fixtureScope(root, { entry: COMMITTED });
+  assert.equal(ledgerState(root), 'committed');
+});
+
 for (const [label, layout, expected] of MATRIX) {
   test(`predicate and resolveGateBundle agree: ${label}`, () => {
     const { resolveGateBundle } = require('../lib/gate-bundle.cjs');
