@@ -241,3 +241,63 @@ test('a global install is still preferred over a project install, as gsd-core do
   assert.match(verdict.message, /memanto: BLOCKED \[agent-id\]/, verdict.message);
   assert.doesNotMatch(verdict.message, /\[gate-bundle\]/, verdict.message);
 });
+
+// --- Round-2 IN-04: the inline predicate and lib/gate-bundle.cjs agree ---
+// The selection rule exists twice (the predicate must decide before it runs
+// any bundle code). This matrix runs the real predicate command with sh and
+// resolveGateBundle over the same fixtures, and fails when they disagree or
+// leave the expected scope. Fixtures are hand-written, no host involved; each
+// fixture gate.cjs prints which directory it was loaded from.
+
+const COMMITTED = { id: 'memanto', version: MANIFEST.version, source: 'fixture', integrity: '', files: [], sharedEdits: [] };
+
+function fixtureScope(root, { manifest = true, manifestId = 'memanto', gate = true, entry } = {}) {
+  const dir = path.join(root, '.gsd', 'capabilities', 'memanto');
+  fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+  if (manifest) fs.writeFileSync(path.join(dir, 'capability.json'), JSON.stringify({ ...MANIFEST, id: manifestId }));
+  if (gate) fs.writeFileSync(path.join(dir, 'scripts', 'gate.cjs'), 'process.stdout.write("RAN:" + require("path").dirname(__dirname)); process.exit(0);\n');
+  if (entry !== undefined) {
+    fs.writeFileSync(path.join(root, '.gsd-capabilities.json'), JSON.stringify({ version: 1, updatedAt: 'x', entries: { memanto: entry } }));
+  }
+}
+
+const MATRIX = [
+  ['global valid', { global: { entry: COMMITTED } }, 'global'],
+  ['global valid, project ledgered too', { global: { entry: COMMITTED }, project: { entry: COMMITTED } }, 'global'],
+  ['global unledgered (hand-copied)', { global: {} }, null],
+  ['planted project ledger with an unledgered global present', { global: {}, project: { entry: COMMITTED } }, null],
+  ['global absent, project ledgered', { project: { entry: COMMITTED } }, 'project'],
+  ['global holds only a stray gate.cjs, project ledgered', { global: { manifest: false }, project: { entry: COMMITTED } }, 'project'],
+  ['global absent, project unledgered', { project: {} }, null],
+  ['neither scope', {}, null],
+  ['global entry pending', { global: { entry: { ...COMMITTED, _pending: { op: 'install' } } }, project: { entry: COMMITTED } }, null],
+  ['global entry missing version', { global: { entry: { ...COMMITTED, version: undefined } }, project: { entry: COMMITTED } }, null],
+  ['global manifest with another id', { global: { manifestId: 'other', entry: COMMITTED }, project: { entry: COMMITTED } }, null],
+  ['project entry missing files', { project: { entry: { ...COMMITTED, files: undefined } } }, null],
+];
+
+for (const [label, layout, expected] of MATRIX) {
+  test(`predicate and resolveGateBundle agree: ${label}`, () => {
+    const { resolveGateBundle } = require('../lib/gate-bundle.cjs');
+    const h = env.tmpDir('memanto-home-');
+    const project = env.tmpDir('memanto-proj-');
+    if (layout.global) fixtureScope(h, layout.global);
+    if (layout.project) fixtureScope(project, layout.project);
+    const want = expected === null ? null : path.join(expected === 'global' ? h : project, '.gsd', 'capabilities', 'memanto');
+
+    const moduleChoice = resolveGateBundle({ gsdHome: h, projectRoot: project });
+    const res = spawnSync('sh', ['-c', PREDICATE.command], {
+      cwd: project,
+      encoding: 'utf8',
+      env: { ...process.env, GSD_HOME: h },
+      timeout: 15000,
+    });
+    let predicateChoice;
+    if (res.status === 0 && res.stdout.startsWith('RAN:')) predicateChoice = res.stdout.slice(4);
+    else if (res.status === 1 && res.stderr.includes('memanto: BLOCKED [gate-bundle]')) predicateChoice = null;
+    else assert.fail(`unexpected predicate result (exit ${res.status}): ${res.stdout}${res.stderr}`);
+
+    assert.equal(moduleChoice, want, `resolveGateBundle: ${label}`);
+    assert.equal(predicateChoice === null ? null : fs.realpathSync(predicateChoice), want === null ? null : fs.realpathSync(want), `predicate: ${label}`);
+  });
+}

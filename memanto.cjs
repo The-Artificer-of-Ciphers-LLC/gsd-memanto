@@ -363,11 +363,7 @@ function collectChecks(cwd) {
   const checks = [];
   let rows = null;
 
-  const located = host.locateGsdTools({
-    env,
-    mainFilename: require.main && require.main.filename,
-    projectRoot: cwd,
-  });
+  const located = host.locateGsdTools({ env, mainFilename: require.main && require.main.filename });
   checks.push(locatedCheck(located));
   const { enabled, rec } = enabledCheck(cfg);
   checks.push(rec);
