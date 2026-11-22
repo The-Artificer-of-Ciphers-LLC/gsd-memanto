@@ -116,17 +116,59 @@ test('POST_COLLISION matches the reasons as gsd-core prints them, and classifyIn
   const ev = (reasons) => ({
     dirs: { global: '/h/m', project: '/p/m' },
     manifest: { global: true, project: true },
-    installed: { global: true, project: true },
+    manifestOk: { global: true, project: true },
+    declaresGate: { global: true, project: true },
+    ledger: { global: 'committed', project: 'committed' },
     gateFile: { global: true, project: true },
-    gateRuns: '/h/m',
+    gateRuns: 'global',
     rows: [
       { id: 'memanto', scope: 'global', status: 'active' },
       { id: 'memanto', scope: 'project', status: 'active' },
     ],
-    render: { ran: true, hook: true },
+    render: { ran: true, hook: true, gate: true },
     reasons,
   });
   for (const p of POST_COLLISION_REASONS) assert.equal(classifyInstall(ev([`${p}x`])).state, STATES.PROJECT_LOADED, p);
   assert.equal(classifyInstall(ev([pre[0]])).state, STATES.GLOBAL_LOADED);
   for (const r of pre.slice(1)) assert.equal(classifyInstall(ev([r])).state, STATES.UNDETERMINED, r);
+});
+
+// Round-8 WR-02: memanto.cjs rootsAlias and classifyInstall mirror overlayRoots
+// when GSD_HOME is (an alias of) the project root: the two capability roots
+// dedup by realpath, and the global root is demoted to consent-required
+// project scope unless it is provably a different physical directory.
+test('the installed gsd-core loader dedups aliased roots by realpath and demotes an aliased GSD_HOME to project scope', () => {
+  assert.ok(fs.existsSync(LOADER), `no gsd-core loader at ${LOADER} (set GSD_CORE_DIR)`);
+  const lines = fs.readFileSync(LOADER, 'utf8').split('\n');
+  const recheck = 'recheck memanto.cjs rootsAlias and lib/install-state.cjs classifyInstall (sameDir, demoted), which mirror it';
+  const start = lines.findIndex((l) => /^\s*function overlayRoots\s*\(/.test(l));
+  assert.ok(start !== -1, `${LOADER}: no function overlayRoots; ${recheck}`);
+  const end = lines.findIndex((l, i) => i > start && /^}\s*$/.test(l));
+  const body = lines.slice(start, end === -1 ? undefined : end + 1).join('\n');
+  const at = (re, what) => assert.match(body, re, `${LOADER}:${start + 1} overlayRoots no longer ${what}; ${recheck}`);
+  at(/realpathSync|canonicalDir\(/, 'canonicalizes the roots (realpath)');
+  at(/hasGenuineProjectMarker\(\s*projectRoot\s*\)/, 'requires a genuine project marker before demoting the global root');
+  at(/provablyDistinct\s*=\s*!\s*globalCanon\.realpathFailed\s*&&/, 'treats a realpath failure as "not provably distinct"');
+  at(/if\s*\(\s*!\s*provablyDistinct\s*\)\s*\n?\s*globalScope\s*=\s*'project'/, "sets globalScope = 'project' when the roots are not provably distinct");
+  const marker = lines.findIndex((l) => /^\s*function hasGenuineProjectMarker\s*\(/.test(l));
+  assert.ok(marker !== -1, `${LOADER}: no function hasGenuineProjectMarker; ${recheck}`);
+  const mbody = lines.slice(marker, marker + 15).join('\n');
+  assert.match(mbody, /'\.planning'/, `${LOADER}:${marker + 1} hasGenuineProjectMarker no longer checks .planning; ${recheck}`);
+  assert.match(mbody, /'\.git'/, `${LOADER}:${marker + 1} hasGenuineProjectMarker no longer checks .git; ${recheck}`);
+  // The classifier side: one directory is one copy, in project scope.
+  const one = classifyInstall({
+    dirs: { global: '/h/m', project: '/h/m' },
+    sameDir: true,
+    manifest: { global: true, project: true },
+    manifestOk: { global: true, project: true },
+    declaresGate: { global: true, project: true },
+    ledger: { global: 'committed', project: 'none' },
+    gateFile: { global: true, project: true },
+    gateRuns: 'global',
+    rows: [{ id: 'memanto', scope: 'project', status: 'inactive', reason: 'no user consent record' }],
+    render: { ran: true, hook: false, gate: false },
+    reasons: [],
+  });
+  assert.equal(one.state, STATES.PROJECT_INACTIVE);
+  assert.deepEqual(one.copies.map((c) => c.scope), ['project']);
 });

@@ -15,7 +15,7 @@ const { spawnSync } = require('node:child_process');
 const env = require('./helpers/gsd-env.cjs');
 const { startFakeApi } = require('./helpers/fake-api.cjs');
 const { assertConsistent } = require('./helpers/install-invariants.cjs');
-const { isInstalledBundle, hasManifest } = require('../lib/gate-bundle.cjs');
+const { resolveGateBundle } = require('../lib/gate-bundle.cjs');
 
 const PHASE_DIR = '.planning/phases/01-test';
 const MANIFEST = JSON.parse(fs.readFileSync(path.join(env.REPO_ROOT, 'capability.json'), 'utf8'));
@@ -257,7 +257,8 @@ test('doctor: gate-bundle claims the project copy collided only when gsd-core re
   const stray = handCopyGlobal(h);
   const r = doctor(project, h, bundle).check('gate-bundle');
   assert.equal(r && r.status, 'error', JSON.stringify(r));
-  assert.ok(r.message.includes(`gsd-core loads memanto from ${stray}`), r.message);
+  assert.ok(r.message.includes(`by the loader's precedence gsd-core would load memanto from ${stray}`), r.message);
+  assert.ok(!r.message.includes('gsd-core loads memanto from'), `load claimed without render evidence: ${r.message}`);
   assert.ok(!r.message.includes('as colliding'), `collision claimed without the host's warning: ${r.message}`);
   assert.ok(r.message.includes('gsd-core scans the global copy first'), r.message);
 });
@@ -316,7 +317,7 @@ test('round-5 repro: when gsd-core skips both copies, loaded is an error and no 
   assert.ok(d.check('duplicate-install').message.includes('gsd-core loaded neither of them'), d.check('duplicate-install').message);
   // Round-6 WR-01: every reason is an ownership clash, so the clash fix applies.
   assert.ok(loaded.fix.includes('does not clear it'), loaded.fix);
-  assertDoctorConsistent(d, h, project, { stray: null });
+  assertDoctorConsistent(d, h, project, { stray: null, loadedScope: null });
 });
 
 // Round-6 WR-01 repros (reviewer's single.cjs): ONE memanto copy, skipped. The
@@ -374,7 +375,7 @@ for (const mode of ['gengines', 'gsquat', 'psquat']) {
         assert.ok(r.fix.includes('engines'), `${id} fix does not point at the engines check: ${r.fix}`);
       }
     }
-    assertDoctorConsistent(d, h, project, { stray: null });
+    assertDoctorConsistent(d, h, project, { stray: null, loadedScope: null });
     if (mode === 'gengines') {
       const eng = d.check('engines');
       assert.ok(/install a memanto release/.test(eng.fix), JSON.stringify(eng));
@@ -382,17 +383,64 @@ for (const mode of ['gengines', 'gsquat', 'psquat']) {
   });
 }
 
-// Round-7: the doctor-level consistency rules (test/helpers/install-invariants.cjs)
-// over a real doctor run. Facts come from the disk, not from doctor.
-function assertDoctorConsistent(d, h, project, { stray }) {
-  const dirs = [globalBundle(h), path.join(project, '.gsd', 'capabilities', 'memanto')];
-  const withManifest = new Set([h, project].filter((root) => hasManifest(root)).map((root) => path.resolve(root)));
-  const installedDirs = [[h, dirs[0]], [project, dirs[1]]].filter(([root]) => isInstalledBundle(root)).map(([, dir]) => dir);
+// Round-7/8: the doctor-level consistency rules (test/helpers/install-invariants.cjs)
+// over a real doctor run. Round-8 WR-03: the facts come from the disk, from a
+// render-hooks call of the test's own, and from the case definition
+// (loadedScope: the copy the repro makes gsd-core load), never from doctor.
+function ledgerLists(root) {
+  try {
+    return Boolean(JSON.parse(fs.readFileSync(path.join(root, '.gsd-capabilities.json'), 'utf8')).entries.memanto);
+  } catch {
+    return false;
+  }
+}
+
+function realOr(p) {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+function assertDoctorConsistent(d, h, project, { stray, loadedScope } = {}) {
+  const dirs = { global: globalBundle(h), project: path.join(project, '.gsd', 'capabilities', 'memanto') };
+  const same = realOr(dirs.global) === realOr(dirs.project);
+  const man = { global: fs.existsSync(path.join(dirs.global, 'capability.json')), project: fs.existsSync(path.join(dirs.project, 'capability.json')) };
+  const led = { global: ledgerLists(h), project: ledgerLists(project) };
+  const marker = fs.existsSync(path.join(project, '.planning')) || fs.existsSync(path.join(project, '.git'));
+  const copyScopes = same ? (man.global ? [marker ? 'project' : 'global'] : []) : ['global', 'project'].filter((sc) => man[sc]);
+  const ledgeredDirs = same ? (led.global || led.project ? [dirs.global] : []) : ['global', 'project'].filter((sc) => led[sc]).map((sc) => dirs[sc]);
+  let enabled = false;
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(project, '.planning', 'config.json'), 'utf8'));
+    enabled = Boolean(cfg.memanto && cfg.memanto.enabled === true);
+  } catch {
+    /* no config: disabled */
+  }
+  const gateRendered = env.memantoHooks(env.renderHooks('discuss:pre', { cwd: project, home: h })).some((x) => x.kind === 'gate');
   assertConsistent(
     ['loaded', 'consent', 'duplicate-install', 'gate-bundle'].map((id) => d.check(id)),
-    { stray, twoCopies: withManifest.size === 2, installedDirs },
+    {
+      stray,
+      twoCopies: copyScopes.length === 2,
+      ledgeredDirs,
+      dirs: same ? { global: dirs.project, project: dirs.project } : dirs,
+      enabled,
+      gateRendered,
+      loadedScope,
+      gateRunsDir: resolveGateBundle({ gsdHome: h, projectRoot: project }),
+      onlyScope: copyScopes.length === 1 ? copyScopes[0] : undefined,
+    },
     JSON.stringify(d.rep.checks.map((c) => c.id)),
   );
+  // Round-8 CR-01: with memanto enabled, doctor always renders discuss:pre and
+  // agrees with the host about whether the memanto gate renders there.
+  if (enabled) {
+    const r = d.check('render:discuss:pre');
+    assert.ok(r, `doctor did not render discuss:pre: ${JSON.stringify(d.rep.checks.map((c) => c.id))}`);
+    assert.equal(r.status === 'ok', gateRendered, JSON.stringify(r));
+  }
 }
 
 // Round-7 repros (reviewer's r7.cjs modes and collide.cjs). Each builds the
@@ -402,14 +450,14 @@ const R7 = {
   strayproj(h, project) {
     const dir = path.join(project, '.gsd', 'capabilities', 'memanto');
     fs.cpSync(env.stageBundle(), dir, { recursive: true });
-    return { bundle: dir, stray: dir };
+    return { bundle: dir, stray: dir, loadedScope: null };
   },
   strayglobal(h) {
     const dir = handCopyGlobal(h);
-    return { bundle: dir, stray: dir };
+    return { bundle: dir, stray: dir, loadedScope: 'global' };
   },
   nothing() {
-    return { bundle: env.stageBundle(), stray: null };
+    return { bundle: env.stageBundle(), stray: null, loadedScope: null };
   },
   globalplusstray(h, project) {
     env.installBundle({ home: h });
@@ -420,7 +468,7 @@ const R7 = {
     const pd = path.join(project, '.gsd', 'capabilities', 'memanto');
     fs.mkdirSync(path.join(pd, 'scripts'), { recursive: true });
     fs.writeFileSync(path.join(pd, 'scripts', 'gate.cjs'), 'process.exit(0)\n');
-    return { bundle: globalBundle(h), stray: pd };
+    return { bundle: globalBundle(h), stray: pd, loadedScope: null };
   },
   collide(h, project) {
     const bundle = projectInstall(project, h);
@@ -432,7 +480,7 @@ const R7 = {
     m.contributions = [];
     delete m.commands;
     fs.writeFileSync(path.join(g, 'capability.json'), JSON.stringify(m, null, 2));
-    return { bundle, stray: null };
+    return { bundle, stray: null, loadedScope: 'global' };
   },
 };
 
@@ -440,10 +488,10 @@ for (const mode of Object.keys(R7)) {
   test(`round-7 repro ${mode}: the four install records agree and stray gate code is named`, () => {
     const h = env.tmpDir('memanto-home-');
     const project = env.makeProject({ config: CFG7(), phaseDirs: ['01-test'] });
-    const { bundle, stray } = R7[mode](h, project);
+    const { bundle, stray, loadedScope } = R7[mode](h, project);
     const d = doctor(project, h, bundle);
     assert.equal(d.status, 1, JSON.stringify(d.rep));
-    assertDoctorConsistent(d, h, project, { stray });
+    assertDoctorConsistent(d, h, project, { stray, loadedScope });
     const loaded = d.check('loaded');
     const gb = d.check('gate-bundle');
     if (mode === 'strayproj') {
@@ -458,7 +506,7 @@ for (const mode of Object.keys(R7)) {
       for (const r of [loaded, gb]) {
         assert.ok(!/neither/.test(r.message), r.message);
         assert.ok(!r.fix.includes('does not clear'), r.fix);
-        assert.ok(r.message.includes(`gsd-core loaded the global memanto copy at ${globalBundle(h)}, but it renders no memanto hook`), r.message);
+        assert.ok(r.message.includes(`gsd-core loaded the global memanto copy at ${globalBundle(h)}, but it renders no memanto gate at discuss:pre`), r.message);
         assert.ok(r.fix.startsWith(`delete ${globalBundle(h)} by hand`), r.fix);
         assert.ok(r.fix.includes(`keep the installed project bundle at ${bundle}`), r.fix);
       }
@@ -479,9 +527,9 @@ test('round-7 repro homeproj: with the project root at GSD_HOME, one copy is nev
   fs.writeFileSync(mf, JSON.stringify(m, null, 2));
   const d = doctor(h, h, globalBundle(h));
   assert.equal(d.status, 1, JSON.stringify(d.rep));
-  assertDoctorConsistent(d, h, h, { stray: null });
+  assertDoctorConsistent(d, h, h, { stray: null, loadedScope: null });
   for (const id of ['loaded', 'gate-bundle']) {
-    assert.ok(d.check(id).message.includes(`gsd-core did not load the global memanto copy at ${globalBundle(h)}`), d.check(id).message);
+    assert.ok(d.check(id).message.includes(`gsd-core did not load the project memanto copy at ${globalBundle(h)}`), d.check(id).message);
   }
   assert.equal(d.check('duplicate-install').status, 'ok');
 });
@@ -519,6 +567,7 @@ for (const mode of ['fragment', 'validation']) {
     assert.equal(fs.existsSync(marker), true, 'the repro no longer runs the global gate.cjs');
     const d = doctor(project, h, bundle);
     assert.equal(d.status, 1, JSON.stringify(d.rep));
+    assertDoctorConsistent(d, h, project, { stray: null, loadedScope: mode === 'fragment' ? 'project' : '?' });
     const gb = d.check('gate-bundle');
     assert.equal(gb && gb.status, 'error', JSON.stringify(gb));
     const loaded = d.check('loaded');
@@ -537,6 +586,124 @@ for (const mode of ['fragment', 'validation']) {
         assert.ok(r.message.includes('doctor cannot tell whether it skipped the global copy'), r.message);
         assert.ok(r.message.includes(globalBundle(h)) && r.message.includes(bundle), r.message);
         assert.ok(r.message.includes('failed validation'), r.message);
+      }
+    }
+  });
+}
+
+// Round-8 repros (reviewer's r8.cjs, r8b.cjs and r8c.cjs). Each builds the
+// state in a temp GSD_HOME, runs doctor (from a clean staged bundle unless the
+// mode says otherwise) and checks the records against the host's own render.
+function editGlobalManifest(h, edit) {
+  const mf = path.join(globalBundle(h), 'capability.json');
+  const m = JSON.parse(fs.readFileSync(mf, 'utf8'));
+  edit(m);
+  fs.writeFileSync(mf, JSON.stringify(m, null, 2));
+}
+
+function homeProject(h) {
+  fs.mkdirSync(path.join(h, '.planning', 'phases', '01-test'), { recursive: true });
+  fs.writeFileSync(path.join(h, '.planning', 'config.json'), JSON.stringify(CFG7()));
+}
+
+const R8 = {
+  // CR-01: the installed global manifest declares no gate.
+  gnogate(h, project) {
+    env.installBundle({ home: h });
+    editGlobalManifest(h, (m) => (m.gates = []));
+    return { project, home: h, loadedScope: 'global' };
+  },
+  twonogate(h, project) {
+    env.installBundle({ home: h });
+    projectInstall(project, h);
+    editGlobalManifest(h, (m) => (m.gates = []));
+    return { project, home: h, loadedScope: 'global' };
+  },
+  twoinvalid(h, project) {
+    env.installBundle({ home: h });
+    projectInstall(project, h);
+    editGlobalManifest(h, (m) => {
+      m.gates = [];
+      m.title = '';
+    });
+    return { project, home: h, loadedScope: 'project' };
+  },
+  // WR-01: a ledgered install whose manifest is corrupt, or whose ledger entry is _pending.
+  gcorrupt(h, project) {
+    env.installBundle({ home: h });
+    fs.writeFileSync(path.join(globalBundle(h), 'capability.json'), '{');
+    return { project, home: h, loadedScope: null };
+  },
+  gpending(h, project) {
+    env.installBundle({ home: h });
+    const lf = path.join(h, '.gsd-capabilities.json');
+    const l = JSON.parse(fs.readFileSync(lf, 'utf8'));
+    l.entries.memanto._pending = { op: 'upgrade' };
+    fs.writeFileSync(lf, JSON.stringify(l, null, 2));
+    return { project, home: h, loadedScope: null };
+  },
+  // WR-02: the project root is GSD_HOME, by path or through a symlink.
+  homeplain(h) {
+    homeProject(h);
+    env.installBundle({ home: h });
+    return { project: h, home: h, loadedScope: null };
+  },
+  homesym(h) {
+    homeProject(h);
+    env.installBundle({ home: h });
+    const link = path.join(env.tmpDir('memanto-link-'), 'home');
+    fs.symlinkSync(h, link);
+    return { project: h, home: link, loadedScope: null };
+  },
+};
+
+for (const mode of Object.keys(R8)) {
+  test(`round-8 repro ${mode}: doctor fails closed and the four install records agree with the host`, () => {
+    const h = env.tmpDir('memanto-home-');
+    const { project, home, loadedScope } = R8[mode](h, env.makeProject({ config: CFG7(), phaseDirs: ['01-test'] }));
+    const d = doctor(project, home, env.stageBundle());
+    assert.equal(d.status, 1, JSON.stringify(d.rep));
+    assertDoctorConsistent(d, home, project, { stray: null, loadedScope });
+    const loaded = d.check('loaded');
+    const gb = d.check('gate-bundle');
+    // twoinvalid: the project copy loaded and its gate renders, so loaded is ok;
+    // its gate runs the global gate.cjs gsd-core rejected, so gate-bundle is an error.
+    assert.equal(loaded && loaded.status, mode === 'twoinvalid' ? 'ok' : 'error', JSON.stringify(loaded));
+    assert.equal(gb && gb.status, 'error', JSON.stringify(gb));
+    if (mode === 'gnogate' || mode === 'twonogate' || mode === 'twoinvalid') {
+      // The doctor's own manifest declares the gate, so discuss:pre is always rendered.
+      const rd = d.check('render:discuss:pre');
+      assert.equal(rd.status, mode === 'twoinvalid' ? 'ok' : 'error', JSON.stringify(rd));
+    }
+    if (mode === 'gnogate') {
+      assert.ok(loaded.message.includes('declares no discuss:pre gate'), loaded.message);
+      assert.ok(loaded.fix.includes('reinstall the global copy in place'), loaded.fix);
+    }
+    if (mode === 'twonogate') {
+      assert.ok(d.check('duplicate-install').message.includes('gsd-core keeps the global one, which renders no memanto gate'), d.check('duplicate-install').message);
+    }
+    if (mode === 'twoinvalid') {
+      const bundle = path.join(project, '.gsd', 'capabilities', 'memanto');
+      assert.ok(gb.message.includes(`would run ${globalBundle(h)}/scripts/gate.cjs, but gsd-core loads the bundle at ${bundle}`), gb.message);
+    }
+    if (mode === 'gcorrupt' || mode === 'gpending') {
+      for (const r of [loaded, gb]) {
+        assert.ok(!/stray or planted/.test(r.message), r.message);
+        assert.ok(!/\bdelete\b/.test(r.fix), `a ledgered install is never deleted by hand: ${r.fix}`);
+      }
+      if (mode === 'gcorrupt') assert.ok(loaded.fix.startsWith('reinstall the global copy in place'), loaded.fix);
+      else {
+        assert.ok(loaded.message.includes('_pending'), loaded.message);
+        assert.ok(loaded.fix.startsWith('finish or roll back the interrupted global install'), loaded.fix);
+        // IN-01: no unhedged load claim without render evidence.
+        assert.ok(!gb.message.includes('gsd-core loads memanto from'), gb.message);
+      }
+    }
+    if (mode === 'homeplain' || mode === 'homesym') {
+      assert.equal(d.check('duplicate-install').status, 'ok', JSON.stringify(d.check('duplicate-install')));
+      for (const r of [loaded, gb, d.check('consent')]) {
+        assert.ok(r.fix.includes('re-consent') && r.fix.includes('--scope project'), `${r.id}: ${r.fix}`);
+        assert.ok(!/\bglobal (?:memanto )?copy\b/.test(r.message), `${r.id} calls the one copy global: ${r.message}`);
       }
     }
   });
