@@ -10,8 +10,9 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { resolveConfig } = require('./lib/config.cjs');
-const { cap } = require('./lib/health.cjs');
+const { cap, CONTROL_CHARS } = require('./lib/health.cjs');
 const host = require('./lib/gsd-host.cjs');
+const gateBundle = require('./lib/gate-bundle.cjs');
 
 const USAGE = 'Usage: gsd_run memanto doctor [--raw]';
 const DIRECT_FORM = 'node "${GSD_HOME:-$HOME}/.gsd/capabilities/memanto/memanto.cjs" doctor';
@@ -19,15 +20,15 @@ const PROBE = path.join(__dirname, 'scripts', 'check-probe.cjs');
 const OWN_MANIFEST = path.join(__dirname, 'capability.json');
 const INTERNAL_FIX = 'report this failure; memanto.enabled=false disables Memanto for this project';
 const REASON_MAX = 300;
-const PROBE_TIMEOUT_MS = 15000;
-const CONTROL = /[\x00-\x1f\x7f-\x9f]/g;
+// Shared with every host query in lib/gsd-host.cjs (WR-01).
+const { PROBE_TIMEOUT_MS } = host;
 
 function record(id, status, message, fix) {
   return { id, status, message, fix: fix || '' };
 }
 
 function clean(value, max) {
-  return cap(String(value).replace(CONTROL, '?'), max);
+  return cap(String(value).replace(CONTROL_CHARS, '?'), max);
 }
 
 function readJson(file) {
@@ -66,6 +67,24 @@ function reinstallFix() {
 // (owner decision, 2026-11-20) bounds everything else, such as a config file
 // that blocks on read (a FIFO), so doctor reports a check-probe error instead
 // of hanging. probe and timeoutMs are injectable for tests only.
+// IN-06: a probe record is trusted only for its known shape. A status other
+// than ok/warn/error, or a record that is not an object, becomes an error, so
+// doctor can never exit 0 on a record it does not understand.
+const STATUSES = new Set(['ok', 'warn', 'error']);
+
+function probeRecord(c) {
+  if (!c || typeof c !== 'object' || Array.isArray(c)) {
+    return record('check-probe', 'error', 'check probe returned a record that is not an object', INTERNAL_FIX);
+  }
+  const id = clean(c.id === undefined ? 'check-probe' : c.id, REASON_MAX);
+  const message = clean(c.message === undefined ? '' : c.message, REASON_MAX);
+  const fix = typeof c.fix === 'string' ? c.fix : '';
+  if (!STATUSES.has(c.status)) {
+    return record(id, 'error', clean(`check probe returned status ${JSON.stringify(c.status)}: ${message}`, REASON_MAX), fix || INTERNAL_FIX);
+  }
+  return record(id, c.status, message, fix);
+}
+
 function gateChecks(cwd, { probe = PROBE, timeoutMs = PROBE_TIMEOUT_MS } = {}) {
   const res = spawnSync(process.execPath, [probe], { cwd, env: process.env, encoding: 'utf8', timeout: timeoutMs });
   if (res.error && res.error.code === 'ETIMEDOUT') {
@@ -84,7 +103,7 @@ function gateChecks(cwd, { probe = PROBE, timeoutMs = PROBE_TIMEOUT_MS } = {}) {
   try {
     const parsed = JSON.parse(res.stdout);
     if (!parsed || !Array.isArray(parsed.checks)) throw new Error('no checks array');
-    return parsed.checks.map((c) => record(String(c.id), c.status, String(c.message), c.fix));
+    return parsed.checks.map(probeRecord);
   } catch (e) {
     const why = `exit ${res.status === null ? res.signal : res.status}: ${clean(res.stderr || e.message, REASON_MAX)}`;
     return [record('check-probe', 'error', `check probe output was not readable (${why})`, INTERNAL_FIX)];
@@ -92,6 +111,17 @@ function gateChecks(cwd, { probe = PROBE, timeoutMs = PROBE_TIMEOUT_MS } = {}) {
 }
 
 function enabledCheck(cfg) {
+  if (!cfg.ok && cfg.kind === 'env') {
+    return {
+      enabled: true, // fail closed: run every check
+      rec: record(
+        'enabled',
+        'warn',
+        clean(`memanto.enabled could not be read: ${cfg.variable} is invalid (see config-unreadable)`, REASON_MAX),
+        clean(`unset ${cfg.variable} or set it to a name without '/', '\\' or '..'`, REASON_MAX),
+      ),
+    };
+  }
   if (!cfg.ok) {
     return {
       enabled: true, // fail closed: run every check
@@ -166,14 +196,18 @@ function consentCheck(rows, scopeDirs) {
 function enginesCheck(rows, scopeDirs, hostVersion) {
   const bad = rows.find((r) => r.status === 'incompatible');
   if (!bad) return record('engines', 'ok', `memanto engines.gsd accepts GSD ${hostVersion || '(unknown version)'}`, '');
-  const manifest = readJson(path.join(scopeDirs[bad.scope] || '', 'capability.json')) || {};
-  const range = manifest.engines && manifest.engines.gsd;
+  // IN-04: an unknown scope has no directory to read; never fall back to a
+  // relative capability.json in the cwd.
+  const dir = Object.prototype.hasOwnProperty.call(scopeDirs, bad.scope) ? scopeDirs[bad.scope] : null;
+  const manifest = (dir && readJson(path.join(dir, 'capability.json'))) || {};
+  const declared = manifest.engines && manifest.engines.gsd;
+  const range = typeof declared === 'string' ? JSON.stringify(declared) : '(unknown range)';
   return record(
     'engines',
     'error',
-    clean(`memanto in ${bad.scope} scope requires engines.gsd ${JSON.stringify(range)} but the host is GSD ${hostVersion || '(unknown version)'}; its gate does not run (fails open)`, REASON_MAX),
+    clean(`memanto in ${bad.scope} scope requires engines.gsd ${range} but the host is GSD ${hostVersion || '(unknown version)'}; its gate does not run (fails open)`, REASON_MAX),
     `install a memanto release whose engines.gsd includes GSD ${hostVersion || 'this host'} ` +
-      `(gsd-tools capability install npm:@taoc/gsd-memanto@<version> --yes), or use a gsd-core inside ${JSON.stringify(range)}`,
+      `(gsd-tools capability install npm:@taoc/gsd-memanto@<version> --yes), or use a gsd-core inside ${range}`,
   );
 }
 
@@ -230,6 +264,44 @@ function duplicateCheck(scopeDirs) {
   );
 }
 
+// CR-01: the discuss:pre predicate runs scripts/gate.cjs only from an installed
+// bundle (lib/gate-bundle.cjs). Error when that differs from the bundle
+// gsd-core loaded, when no installed bundle exists while one is loaded, or when
+// a scope directory holds gate code that is not an installed bundle (stray or
+// planted). rows is null when capability list could not be read.
+function gateBundleCheck(rows, scopeDirs, roots) {
+  const active = rows ? rows.find((r) => r.status === 'active') : null;
+  const loaded = active ? scopeDirs[active.scope] : null;
+  const resolved = gateBundle.resolveGateBundle(roots);
+  if (loaded && resolved && path.resolve(resolved) !== path.resolve(loaded)) {
+    return record(
+      'gate-bundle',
+      'error',
+      clean(`the discuss:pre gate would run ${resolved}/scripts/gate.cjs, but gsd-core loaded the bundle at ${loaded}`, REASON_MAX),
+      `remove one copy so a single installed bundle remains: gsd-tools capability remove memanto --scope ${active.scope === 'global' ? 'project' : 'global'}`,
+    );
+  }
+  if (loaded && !resolved) {
+    return record(
+      'gate-bundle',
+      'error',
+      clean(`gsd-core loaded memanto from ${loaded}, but the discuss:pre gate finds no installed bundle (capability.json plus a committed ledger entry) and blocks every run`, REASON_MAX),
+      reinstallFix(),
+    );
+  }
+  for (const [scope, dir] of Object.entries(scopeDirs)) {
+    if (!dir || !isFile(path.join(dir, 'scripts', 'gate.cjs'))) continue;
+    if (gateBundle.isInstalledBundle(roots[scope === 'global' ? 'gsdHome' : 'projectRoot'])) continue;
+    return record(
+      'gate-bundle',
+      'error',
+      clean(`${dir} holds scripts/gate.cjs but is not an installed memanto bundle (no capability.json with id memanto or no committed ${scope} ledger entry); stray or planted gate code`, REASON_MAX),
+      `delete ${dir} (the gate never runs it), then ${reinstallFix()}`,
+    );
+  }
+  return record('gate-bundle', 'ok', 'the discuss:pre gate runs the installed bundle gsd-core loads', '');
+}
+
 // F11 / Pitfall 2: these discuss paths never render discuss:pre.
 function discussBypassCheck(cfg) {
   const mode = cfg.ok ? cfg.get('workflow.discuss_mode') : undefined;
@@ -259,8 +331,10 @@ function collectChecks(cwd) {
     global: path.join(gsdHome, '.gsd', 'capabilities', 'memanto'),
     project: path.join(cwd, '.gsd', 'capabilities', 'memanto'),
   };
+  const roots = { gsdHome, projectRoot: cwd };
   const cfg = resolveConfig({ cwd, env });
   const checks = [];
+  let rows = null;
 
   const located = host.locateGsdTools({
     env,
@@ -277,7 +351,7 @@ function collectChecks(cwd) {
     if (!list.ok) {
       checks.push(record('capability-list', 'error', clean(`capability list failed: ${list.reason}`, REASON_MAX), 'run gsd-tools capability list to see the host error'));
     } else {
-      const rows = list.rows.filter((r) => r && r.id === 'memanto');
+      rows = list.rows.filter((r) => r && r.id === 'memanto');
       if (enabled) checks.push(loadedCheck(rows));
       checks.push(consentCheck(rows, scopeDirs));
       checks.push(enginesCheck(rows, scopeDirs, located.version));
@@ -287,6 +361,7 @@ function collectChecks(cwd) {
     }
   }
   checks.push(duplicateCheck(scopeDirs));
+  checks.push(gateBundleCheck(rows, scopeDirs, roots));
   checks.push(discussBypassCheck(cfg));
   if (enabled) checks.push(...gateChecks(cwd));
   return checks;
@@ -308,13 +383,17 @@ function renderText(checks) {
 function runDoctor(ctx) {
   const cwd = ctx.cwd || process.cwd();
   let checks;
+  let output;
+  // IN-06: rendering is guarded too, so a malformed record yields a
+  // doctor-internal error instead of a thrown router.
   try {
     checks = collectChecks(cwd);
+    output = ctx.raw ? JSON.stringify({ checks }) + '\n' : renderText(checks);
   } catch (e) {
     checks = [record('doctor-internal', 'error', clean(e && e.message ? e.message : e, REASON_MAX), INTERNAL_FIX)];
+    output = ctx.raw ? JSON.stringify({ checks }) + '\n' : renderText(checks);
   }
-  if (ctx.raw) process.stdout.write(JSON.stringify({ checks }) + '\n');
-  else process.stdout.write(renderText(checks));
+  process.stdout.write(output);
   process.exitCode = checks.some((c) => c.status === 'error') ? 1 : 0;
   return undefined;
 }
@@ -326,7 +405,8 @@ function route(ctx) {
   return undefined;
 }
 
-module.exports = { route, gateChecks, PROBE_TIMEOUT_MS };
+// enginesCheck is exported for tests only.
+module.exports = { route, gateChecks, enginesCheck, PROBE_TIMEOUT_MS };
 
 if (require.main === module) {
   route({

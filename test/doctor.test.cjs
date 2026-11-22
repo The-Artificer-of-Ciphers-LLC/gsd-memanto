@@ -260,7 +260,7 @@ test('default discuss mode: discuss-bypass warns naming --power and --assumption
   assert.ok(r, res.stdout);
   assert.equal(r.status, 'warn', JSON.stringify(r));
   assert.ok(r.message.includes('--power') && r.message.includes('--assumptions'), r.message);
-  for (const id of ['gsd-core-located', 'enabled', 'loaded', 'consent', 'engines', 'render:discuss:pre', 'duplicate-install']) {
+  for (const id of ['gsd-core-located', 'enabled', 'loaded', 'consent', 'engines', 'render:discuss:pre', 'duplicate-install', 'gate-bundle']) {
     assert.equal(rec(rep, id) && rec(rep, id).status, 'ok', `${id}: ${JSON.stringify(rec(rep, id))}`);
   }
 });
@@ -287,6 +287,76 @@ test('memanto.enabled not true: enabled warns and the loaded, render and gate ch
   assert.ok(rec(rep, 'enabled'), res.stdout);
   assert.equal(rec(rep, 'enabled').status, 'warn');
   for (const id of ['loaded', 'render:discuss:pre', 'agent-id']) assert.equal(rec(rep, id), undefined, id);
+});
+
+// --- IN-06: probe records are validated; an unknown status counts as an error ---
+
+test('gateChecks coerces malformed probe records to error records with string fields', () => {
+  const doctor = require('../memanto.cjs');
+  const dir = env.tmpDir('memanto-badprobe-');
+  const probe = path.join(dir, 'bad-probe.cjs');
+  const checks = [
+    { id: 'ok-one', status: 'ok', message: 'fine', fix: '' },
+    { id: 'bogus', status: 'bogus', message: 'm', fix: '' },
+    { id: 'numeric', status: 42, message: 7, fix: null },
+    { id: 'missing' },
+    null,
+  ];
+  fs.writeFileSync(probe, `process.stdout.write(${JSON.stringify(JSON.stringify({ checks }))});\n`);
+  const out = doctor.gateChecks(dir, { probe, timeoutMs: 5000 });
+  assert.equal(out.length, checks.length, JSON.stringify(out));
+  assert.deepEqual(out.map((c) => c.status), ['ok', 'error', 'error', 'error', 'error']);
+  for (const c of out) {
+    for (const k of ['id', 'status', 'message', 'fix']) assert.equal(typeof c[k], 'string', JSON.stringify(c));
+    if (c.status === 'error') assert.ok(c.fix.length > 0, `no fix for ${JSON.stringify(c)}`);
+  }
+});
+
+// --- IN-04: an incompatible row in an unknown scope never reads a cwd capability.json ---
+
+test('enginesCheck with an unknown scope prints (unknown range), not a capability.json from the cwd', () => {
+  const cwd = env.tmpDir('memanto-engines-cwd-');
+  fs.writeFileSync(path.join(cwd, 'capability.json'), JSON.stringify({ id: 'other', engines: { gsd: '>=7.7.7' } }));
+  const script = `const d = require(${JSON.stringify(path.join(env.REPO_ROOT, 'memanto.cjs'))});
+const r = d.enginesCheck([{ id: 'memanto', status: 'incompatible', scope: 'weird' }], { global: '/nonexistent-g', project: '/nonexistent-p' }, '1.20.1');
+process.stdout.write(JSON.stringify(r));`;
+  const res = spawnSync(process.execPath, ['-e', script], { cwd, encoding: 'utf8' });
+  assert.equal(res.status, 0, res.stderr);
+  const r = JSON.parse(res.stdout);
+  assert.equal(r.status, 'error', JSON.stringify(r));
+  assert.ok(r.message.includes('(unknown range)'), r.message);
+  assert.ok(!r.message.includes('7.7.7') && !r.fix.includes('7.7.7'), JSON.stringify(r));
+});
+
+// --- IN-03: doctor neutralises the Unicode line and paragraph separators too ---
+
+test('a GSD_CORE_DIR holding U+2028 and U+2029 is echoed without line separators', () => {
+  const core = path.join(env.tmpDir('memanto-nocore-'), 'a\u2028b\u2029c');
+  const project = env.makeProject({ config: healthyConfig() });
+  const res = direct(project, { extraEnv: { GSD_CORE_DIR: core } });
+  const r = rec(report(res), 'gsd-core-located');
+  assert.equal(r.status, 'error', JSON.stringify(r));
+  assert.ok(r.message.includes('a?b?c'), JSON.stringify(r.message));
+  assert.ok(!/[\u2028\u2029]/.test(res.stdout), 'raw output carries a line separator');
+  const text = direct(project, { raw: false, extraEnv: { GSD_CORE_DIR: core } });
+  assert.ok(!/[\u2028\u2029]/.test(text.stdout), 'text output carries a line separator');
+});
+
+// --- WR-03: an invalid GSD_PROJECT is reported as an environment problem ---
+
+test('an invalid GSD_PROJECT: enabled warns naming the variable and config-unreadable says to unset it', () => {
+  const project = env.makeProject({ config: healthyConfig() });
+  const res = direct(project, { extraEnv: { GSD_PROJECT: '../x' } });
+  assert.equal(res.status, 1, `${res.stdout}${res.stderr}`);
+  const rep = report(res);
+  const enabled = rec(rep, 'enabled');
+  assert.equal(enabled.status, 'warn', JSON.stringify(enabled));
+  assert.match(enabled.message, /GSD_PROJECT/, enabled.message);
+  assert.ok(!/config file/.test(enabled.fix), enabled.fix);
+  const unreadable = rec(rep, 'config-unreadable');
+  assert.ok(unreadable, res.stdout);
+  assert.match(unreadable.message, /^GSD_PROJECT is invalid/, unreadable.message);
+  assert.match(unreadable.fix, /^unset GSD_PROJECT/, unreadable.fix);
 });
 
 // --- Post-merge owner fix 1: the check-probe spawn is time-bounded ---

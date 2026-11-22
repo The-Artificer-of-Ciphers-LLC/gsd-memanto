@@ -72,6 +72,27 @@ test('validateEndpointUrl accepts http and https URLs, including userinfo', () =
   assert.equal(validateEndpointUrl('http://localhost:8000').ok, true);
 });
 
+// IN-05: one whitespace rule for every memanto value: surrounding whitespace
+// blocks (as memanto.agent_id does), it is never trimmed away silently.
+test('validateEndpointUrl rejects a URL with leading or trailing whitespace', () => {
+  const { validateEndpointUrl } = health();
+  for (const v of [' http://h:1', 'http://h:1 ', '\thttp://h:1\n', ' http://h:1 ']) {
+    assert.deepEqual(validateEndpointUrl(v), { ok: false, reason: 'whitespace' }, JSON.stringify(v));
+  }
+});
+
+for (const key of ['backend_url', 'api_url']) {
+  test(`memanto.${key} with surrounding whitespace blocks with a whitespace line and no request`, () => {
+    const before = servers.ok.requests.length;
+    const other = key === 'backend_url' ? 'api_url' : 'backend_url';
+    const r = runGate({ [key]: ` ${servers.ok.url} `, [other]: servers.ok.url });
+    const id = key === 'backend_url' ? 'backend-url' : 'api-url';
+    assert.deepEqual(r.ids, [id], r.message);
+    assert.ok(lineFor(r, id).includes(`memanto.${key} has leading or trailing whitespace`), r.message);
+    assert.equal(servers.ok.requests.length - before, 1, 'only the other endpoint should be probed');
+  });
+}
+
 // --- unit: redactUrl ---
 
 test('redactUrl strips userinfo and caps to 160 characters', () => {
@@ -83,6 +104,33 @@ test('redactUrl strips userinfo and caps to 160 characters', () => {
   assert.ok(long.length <= 160, `length ${long.length}`);
   assert.ok(!long.includes('user:pass'));
 });
+
+// CR-02: a password with an unescaped reserved character is the usual reason a
+// URL does not parse, so the unparseable path must strip userinfo too.
+const UNPARSEABLE_USERINFO = [
+  ['/', 'http://user:p/ss@host:8000', 'p/ss'],
+  ['#', 'http://user:p#w@host', 'p#w'],
+  ['?', 'http://user:p?w@host:8000/x', 'p?w'],
+  ['@', 'http://user:p@ss@host:99999', 'p@ss'],
+  ['a space', 'http://user:p w@host:99999', 'p w'],
+];
+
+for (const [label, value, secret] of UNPARSEABLE_USERINFO) {
+  test(`redactUrl strips userinfo from an unparseable URL whose password holds ${label}`, () => {
+    assert.throws(() => new URL(value), 'the case must not parse as a URL');
+    const out = health().redactUrl(value);
+    assert.ok(!out.includes(secret), `${JSON.stringify(value)} -> ${JSON.stringify(out)}`);
+    assert.ok(!out.includes('user') && !out.includes('@'), `${JSON.stringify(value)} -> ${JSON.stringify(out)}`);
+  });
+
+  test(`the gate never prints the password of an unparseable backend_url holding ${label}`, () => {
+    const r = runGate({ backend_url: value, api_url: servers.ok.url });
+    assert.equal(r.block, true, r.message);
+    assert.deepEqual(r.ids, ['backend-url'], r.message);
+    assert.ok(!r.message.includes(secret), `password leaked: ${r.message}`);
+    assert.ok(!r.message.includes('user:') && !r.message.includes('@'), `userinfo leaked: ${r.message}`);
+  });
+}
 
 test('redactUrl removes control characters so a value cannot forge extra gate lines', () => {
   const { redactUrl } = health();

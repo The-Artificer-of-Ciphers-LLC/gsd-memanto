@@ -188,6 +188,26 @@ for (const [variable, value] of [
     assert.equal(res.ok, false, JSON.stringify(res));
     assert.match(res.error, new RegExp(`invalid ${variable}`));
     assert.equal(res.path, variable);
+    // WR-03: an environment variable, not an unreadable file.
+    assert.equal(res.kind, 'env', JSON.stringify(res));
+    assert.equal(res.variable, variable);
+  });
+}
+
+// WR-03: the gate record names the variable and says how to fix it.
+for (const variable of ['GSD_PROJECT', 'GSD_WORKSTREAM']) {
+  test(`an invalid ${variable} yields a config-unreadable record that says to unset or rename it`, async () => {
+    const { runGateChecks, renderGateFailures } = require('../lib/checks.cjs');
+    const cwd = project();
+    const records = await runGateChecks({ cwd, env: blankEnv({ [variable]: '../x' }) });
+    assert.equal(records.length, 1, JSON.stringify(records));
+    const [r] = records;
+    assert.equal(r.id, 'config-unreadable');
+    assert.equal(r.status, 'error');
+    assert.match(r.message, new RegExp(`^${variable} is invalid \\(`), r.message);
+    assert.ok(!/readable/.test(r.fix), r.fix);
+    assert.equal(r.fix, `unset ${variable} or set it to a name without '/', '\\' or '..'`);
+    assert.ok(renderGateFailures(records).includes(`[config-unreadable] ${variable} is invalid`));
   });
 }
 
