@@ -1,154 +1,176 @@
 ---
 phase: 01-walking-skeleton
-reviewed: 2026-11-22T06:10:00Z
+reviewed: 2026-11-22T15:10:00Z
 depth: standard
-files_reviewed: 8
+files_reviewed: 14
 files_reviewed_list:
   - memanto.cjs
-  - lib/install-state.cjs
+  - lib/safe-read.cjs
   - lib/gate-bundle.cjs
+  - lib/install-state.cjs
+  - lib/config.cjs
   - README.md
-  - test/install-state.test.cjs
-  - test/helpers/install-invariants.cjs
+  - test/bundle.test.cjs
+  - test/doctor.test.cjs
   - test/gate-bundle.test.cjs
-  - test/loader-drift.test.cjs
+  - test/helpers/install-invariants.cjs
+  - test/install-state.test.cjs
+  - test/release.test.cjs
+  - test/render-points.test.cjs
+  - test/safe-read.test.cjs
 findings:
-  critical: 1
-  warning: 3
+  critical: 0
+  warning: 2
   info: 3
-  total: 7
+  total: 5
 status: issues_found
 ---
 
-# Phase 1: Code Review Report (round 9, re-review of the round-8 doctor evidence fixes)
+# Phase 1: Code Review Report (round 10, re-review of the round-9 fixes and the release-bump hash fix)
 
-**Reviewed:** 2026-11-22T06:10:00Z
+**Reviewed:** 2026-11-22T15:10:00Z
 **Depth:** standard
-**Files Reviewed:** 8 (`git diff 3157990^1 3157990 -- . ':!.planning'`; `lib/gsd-host.cjs` and the gsd-core 1.20.1 loader read as callees)
+**Files Reviewed:** 14 (`git diff a0a2173^1 HEAD -- . ':!.planning' ':!CHANGELOG.md'`; `capability.json`, `.github/workflows/publish.yml` and the gsd-core 1.20.1 predicate evaluator read as context)
 **Status:** issues_found
 
 ## Summary
 
-`npm test`: 488 tests, 487 pass, 1 skipped, 0 fail. Every host run used a temp `GSD_HOME` and a temp project. The only network targets were the closed port `127.0.0.1:9` and, for one run (WR-01), `GET http://localhost:8000/health`. The necessity reference was not read this round, so no necessity findings are claimed and the `necessity:` count is left out.
+`npm test`: 512 tests, 511 pass, 1 skipped, 0 fail. Every host run used a temp `GSD_HOME` and a temp project. The only network targets were the fake API (`test/helpers/fake-api.cjs`) and the closed port `127.0.0.1:9`. No real Memanto server was contacted. The necessity reference was not read this round, so no necessity findings are claimed and the `necessity:` count is left out.
 
-Repro scripts are in `/private/tmp/claude-501/-Users-trekkie-projects-gsd-memanto/4f758622-4157-4863-b789-bcac255aeca3/scratchpad/r9/`:
-- `r9f.cjs`: a FIFO planted at the project `capability.json` (CR-01). Pass `cur` for the working tree, or `base7` for the base.
-- `r9.cjs` / `r9h.cjs`: an edited global gate predicate or blocking flag (WR-01). `r9h.cjs` uses the live `/health`.
-- `r9p.cjs` / `r9p2.cjs`: a planted project manifest with control characters and many points (WR-02).
-- `base7/`: a `git archive 3157990^1` export, used to show what the base does.
+Repro scripts are in `/private/tmp/claude-501/-Users-trekkie-projects-gsd-memanto/4f758622-4157-4863-b789-bcac255aeca3/scratchpad/r10/`:
+- `release.cjs <patch|minor> <agent|EMPTY> <global|project>`: runs the release simulation.
+- `r10h.cjs` / `r10h2.cjs <mode>`: plants hostile files next to a healthy global install.
+- `r10a.cjs`: covers GSD_HOME equal to the project root.
+- `r10w.cjs` / `r10w2.cjs <mode>`: edits gate fields (`when`, `timeout`, `gexit0`, `gnonblock`, `gpin`).
 
-### Status of the round-8 findings
+### Release simulation (release-critical check 1): passes
 
-| Round-8 | Verdict | Evidence |
+`release.cjs` does these steps:
+1. Exports `HEAD` with `git archive`.
+2. Extracts the `run:` block of the publish.yml "Bump the version" step and runs it with bash and `BUMP=patch` (`npm version` plus the heredoc).
+3. Copies only the `package.json` `files` whitelist.
+4. Installs it into a temp `GSD_HOME` with `gsd-tools capability install <dir> --yes`.
+
+Results:
+- **0.1.1, global:** both `gsd_run memanto doctor` and the direct form exit 0. `loaded`, `render:discuss:pre` and `gate-bundle` are ok, and the only non-ok record is the `discuss-bypass` warn. The rendered gate is `blocking:true`, `onError:halt`, and `check predicate` gives `block:false`.
+- **0.1.1, project scope:** same result.
+- **Minor bump (0.2.0):** same result.
+- **Empty `agent_id`:** the gate gives `block:true` with `BLOCKED [agent-id] memanto.agent_id is empty`, and doctor exits 1 with an `agent-id` error.
+
+### Release-critical check 2
+
+**Fail-open:** none found.
+- `exit 0`, `blocking:false`/`onError:skip` and an old-release pin all give `loaded`, `render:discuss:pre` and `gate-bundle` errors, with doctor exit 1.
+- A gate `when` key that is false is filtered by gsd-core, so it renders nothing, and doctor reports errors.
+- A large predicate `timeout` cannot pass a failing gate, because the evaluator blocks on a timeout.
+
+**Credential echo:** none found in the new code paths.
+
+**Hang:** none found. Doctor finished in under 1 s every time, with any of these planted:
+- a FIFO at the project ledger or the global ledger;
+- a directory at `config.json`;
+- a symlink to `/dev/zero` at `config.json` or at the project manifest;
+- a symlink loop;
+- a 1.1 MB `config.json`;
+- an unconsented third-party project capability whose `fragment.path` is a FIFO (gsd-core `render-hooks` ran in 79 ms).
+
+**Fix hint that deletes a ledgered install:** found. See WR-01.
+
+### Status of the round-9 findings
+
+| Round-9 | Verdict | Evidence |
 |---------|---------|----------|
-| CR-01 | Fixed | `r8.cjs gnogate`: `loaded`, `render:discuss:pre` and `gate-bundle` are errors. `twonogate` gives `global-loaded-no-gate`. `twoinvalid` gives a `gate-bundle` error (the gate runs the global bundle, gsd-core loads the project one). `discuss:pre` is hard-coded in `declaredPoints` (`memanto.cjs:191-196`). `render.gate` is required for `LOADED_STATES` (`lib/install-state.cjs:225-226`). |
-| WR-01 | Fixed | `r8c.cjs gcorrupt` gives `broken-install` with a reinstall-in-place fix. `gpending` gives `install-pending` with "finish or roll back". No record says "stray" or "delete". |
-| WR-02 | Fixed | `r8b.cjs homeplain` and `homesym` report one project-scope copy. `loaded`, `consent` and `gate-bundle` all give the `--scope project` re-consent fix. `rootsAlias` (`memanto.cjs:274-283`) matches `overlayRoots` (`capability-loader.cjs:259-290`). |
-| WR-03 | Fixed | The doctor facts come from the disk and from the test's own `render-hooks` call (`test/gate-bundle.test.cjs`, `assertDoctorConsistent`). The cross-record and re-consent rules are present (`test/helpers/install-invariants.cjs:121-149`). `scratchpad/r8/mutate8.out` shows that all 15 mutants are caught. |
-| IN-01 | Fixed | `gate-bundle` hedges whenever `!cls.loaded` (`lib/install-state.cjs:581-582`). |
-
-Round 8 found no new fail-open path in the classifier. `gate-bundle` ok requires all of: a `LOADED_STATES` state, which needs `render.gate`; `gateRuns` equal to the loaded directory; and no stray code. The two-copy scope inference was traced against the loader's skip order. Each misattribution found ends in a `gate-bundle` error, because the predicate never falls back to a project copy while a global `capability.json` exists. The issues below come from the new evidence gathering.
+| CR-01 | Fixed | `r9/r9f.cjs cur`: doctor finishes in 0.97 s with `unreadable-files`. `lib/safe-read.cjs:47-91` does `lstat`, then `stat` on a symlink, a type and size check, an `O_NONBLOCK` open, then `fstat` again. The FIFO, device, loop and oversize repros above all pass. |
+| WR-01 | Fixed | `r10w2.cjs gexit0`, `gnonblock` and `gpin` give the fields `command`, `blocking, onError` and `version`, with three errors and exit 1. The constants are checked at `memanto.cjs:288-307`. |
+| WR-01 bump fix | Fixed | The release simulation above. `normalisePins` uses the same pattern as `publish.yml:212`. |
+| WR-02 | Fixed | `r9/r9p2.cjs 40`: 1 render record, 0 ESC bytes, 0.84 s. `LOOP_POINTS` is drift-tested against `loop-host-contract.cjs`. |
+| WR-03 | Fixed | The `NO_GATE_STATES` branch in `duplicateRecord` (`lib/install-state.cjs`), the new shared invariant, and the green table and doctor tests. |
+| IN-01 | Fixed | `loaded` is pushed whenever gsd-core is located (`memanto.cjs`, `collectChecks`), with the disabled warn in `loadedRecord`. |
+| IN-02 | Fixed | `ledgerState` gives `pending` for `{op}` and `true`, and `none` for `null`, `false`, `0` and `''` (checked directly). |
+| IN-03 | Fixed | The no-gate fix is now "reinstall ... in place at this release". `renderFix(null)` gives the reinstall alone. |
 
 ## Narrative Findings (AI reviewer)
 
-## Critical Issues
-
-### CR-01: Regression: a FIFO planted at the project `capability.json` hangs doctor forever
-
-**File:** `memanto.cjs:191-196` (`declaredPoints`), `memanto.cjs:35-41` (`readJson`)
-
-**Issue:** Round 8 changed `declaredPoints` so that it always reads both scope manifests with `readJson`, which is a plain `fs.readFileSync`. Before, it stopped at the first manifest it found, which was the active (global) row's. A cloned repo controls `<project>/.gsd/capabilities/memanto/capability.json`. If that file is a FIFO, `readFileSync` blocks with no writer, and doctor never returns. `gsd_run memanto doctor` is a synchronous router, so it hangs too.
-
-gsd-core treats exactly this as a HIGH finding (#1459 finding 2, `capability-loader.cjs:636-640`) and reads manifests through `readSmallRegularFile`. This repo's own `lib/gate-bundle.cjs:32-35` `readJsonFile` already guards with `statSync().isFile()`. `gatherEvidence` (`memanto.cjs:293`) reads the same file safely, but `declaredPoints` reads it first. An oversized planted file is read whole as well.
-
-**Reproduced:** `node r9f.cjs cur` against the working tree: doctor is killed by a 30 s timeout (`SIGKILL`, `ETIMEDOUT`). `node r9f.cjs base7` against `3157990^1`: doctor finishes in 0.7 s and reports the `consent` error.
-
-**Fix:** Read the manifests once, through the regular-file reader, and reuse them:
-```js
-// gatherEvidence already has manifests = per((s) => gateBundle.readManifest(rootOf[s]))
-function declaredPoints(manifests) {
-  const points = ['discuss:pre'];
-  pointsOf(readJson(OWN_MANIFEST), points);
-  for (const m of [manifests.global, manifests.project]) pointsOf(m, points);
-  return points;
-}
-```
-Compute `manifests` before the render loop in `collectChecks`. Also make `readJson` reject a file that is not regular, which also covers `enginesCheck` at `:166`. Add a FIFO doctor test (`mkfifo`, skipped on win32).
-
 ## Warnings
 
-### WR-01: Doctor exits 0 with `loaded`, `render:discuss:pre` and `gate-bundle` ok when the installed global gate is `exit 0` or non-blocking
+### WR-01: An unreadable ledger makes doctor tell the user to delete a ledgered global bundle by hand, which contradicts the new `unreadable-files` record
 
-**File:** `memanto.cjs:198` (`isMemantoGate`), `memanto.cjs:213`, `lib/install-state.cjs:656`, `README.md:174`
+**File:** `lib/gate-bundle.cjs:85-95` (`ledgerState` returns `'none'` on any read error), `lib/install-state.cjs:333-336` (`deleteFix`), `memanto.cjs:226-243` (`unreadableCheck`)
 
-**Issue:** The README now says `gate-bundle` is "`ok` only when the memanto gate renders at `discuss:pre` and its predicate runs the bundle of the copy that rendered it". However:
-- `isMemantoGate` checks only `capId` and `kind`.
-- `gateRuns` comes from doctor's own copy of the selection rule, not from the rendered predicate.
-- `render-hooks` returns `check.predicate.command`, `blocking` and `onError` (observed), and doctor ignores all three.
+**Issue:** Round 9 made doctor detect a ledger that exists but cannot be read (`unreadableFiles`). That knowledge feeds only the separate `unreadable-files` record, not the classifier. `ledgerState`, `isInstalledBundle` and `resolveGateBundle` still turn an EACCES, FIFO or over-8-MiB ledger into "no ledger entry". The ledgered global copy is then classed as unledgered, and `gate-bundle` gives `deleteFix`:
 
-So a global manifest whose gate is `command: "exit 0"`, or `blocking: false, onError: "skip"`, still gets: `loaded` ok "its gate renders at discuss:pre", `gate-bundle` ok "the discuss:pre gate renders and runs the installed bundle", and doctor exit 0. The `exit 0` gate never blocks.
+> delete <GSD_HOME>/.gsd/capabilities/memanto by hand (no global ledger entry lists it, so gsd-tools capability remove cannot remove it), then reinstall
 
-This sits next to the owner's host-limit decision, because global bundles are not hash-bound. It is still raised for two reasons:
-- The new README sentence is false in this case.
-- Round-8 CR-01 (`gates: []`) was the same edited-manifest class and was treated as a finding. A stale or hand-"unblocked" `blocking:false` is a non-malicious way to reach it.
+In the same output, `unreadable-files` says to move the ledger aside and reinstall. So two records give opposite remedies, and one of them deletes an install that has a committed ledger entry. This breaks the round-8 WR-01 rule ("a ledgered copy is never deleted by hand") and release-critical check 2. Doctor still exits 1, and the gate still blocks, so this does not fail open. That is why it is a WARNING.
 
-It is a WARNING, not a BLOCKER: anyone who can edit the unhashed global bundle can also edit `memanto.cjs`.
+**Reproduced:**
+- `node r10h2.cjs gledgerfifo` (the global ledger replaced by a FIFO).
+- `node r10h.cjs ledgereacces` (the global ledger `chmod 0`).
 
-**Reproduced:** `node r9h.cjs gexit0` and `node r9h.cjs gnonblock` against the live `/health`: all three records ok, `errors:` empty, doctor exit 0. `r9.cjs gexit0` shows that `gsd-tools check predicate` on the rendered predicate returns `block:false`.
+Both give `gate-bundle error ... FIX: delete <home>/.gsd/capabilities/memanto by hand (no global ledger entry lists it ...)`, and next to it `unreadable-files ... FIX: move <home>/.gsd-capabilities.json aside, then reinstall memanto in global scope`.
 
-**Fix:** Require the rendered gate to match the shipped contract. Use constants in `memanto.cjs` (not `OWN_MANIFEST`, which is in the same editable bundle): `blocking === true`, `onError === 'halt'`, `check.predicate.kind === 'command-exit-zero'`, and a command equal to the shipped predicate string (or at least one that contains the `[gate-bundle]` selector and `scripts/gate.cjs`). Otherwise give `render:discuss:pre` an error such as "the memanto gate renders but is not the shipped blocking gate". Alternatively, reword the README to say doctor does not verify the predicate.
+**Fix:** Give the ledger a fourth state and treat it as unknown, never as absent:
+```js
+// lib/gate-bundle.cjs
+function ledgerState(root) {
+  if (!root) return 'none';
+  const r = readRegularFile(ledgerFile(root), LEDGER_MAX_BYTES);
+  if (r.absent) return 'none';
+  if (!r.ok) return 'unreadable';
+  // ... parse as today, 'none' only when the parsed ledger has no memanto entry
+}
+```
+In `classifyInstall`, map `'unreadable'` to `ledgered: true` for the delete and stray rules (or add a state such as `ledger-unreadable`). Its primary fix should be to repair the ledger, and `deleteFix` should never be used for it. Add a table case and a doctor repro, a FIFO and a `chmod 0` global ledger, that assert no record says "delete ... by hand".
 
-### WR-02: Regression: a planted project manifest now injects raw control characters into the doctor output and an unbounded number of `render-hooks` spawns, next to a legitimate global install
+### WR-02: `unreadable-files` fixes ignore the classifier's scope model: wrong scope with GSD_HOME at the project root, and "reinstall memanto" in a scope that holds no memanto copy
 
-**File:** `memanto.cjs:191-196`, `memanto.cjs:208-218` (`renderCheck`: `id = render:${point}` and the `:214`/`:217` messages are not passed through `clean`)
+**File:** `memanto.cjs:226-243` (`unreadableCheck`)
 
-**Issue:** `declaredPoints` now adds every `point` string from the untrusted, unconsented project manifest, even when a global copy is installed and loaded. Round 7 read only the active global manifest in that case. Each point becomes one `gsd-tools loop render-hooks <point>` spawn (about 170 ms each, so 40 points take 7.5 s, and there is no cap). Each point also becomes a record whose `id` is the raw point. `renderText` prints that `id` unescaped, so ESC/BEL sequences (terminal title, colour, OSC 8 links) reach the user's terminal. The `:211` message cleans the point, but the `id` does not.
+**Issue:** `unreadableCheck` is built outside the classifier, the pattern round 7 removed, so it repeats two bugs that the classifier already fixed.
 
-**Reproduced:** `node r9p2.cjs 3 base7`: 1 render record and 0 raw ESC bytes. `node r9p2.cjs 3` (working tree): 5 render records and 2 raw ESC bytes, with `id` set to `render:\u001b]0;PWNED\u0007\u001b[31mRED`. `node r9p.cjs 40`: 42 render records in 7.5 s.
+1. **Alias scope.** When `GSD_HOME` is the project root, the `seen` dedupe keeps the first label, `global`. For a ledgered copy with an unreadable `capability.json`, it then says "reinstall the global copy in place: ... --yes", with no `--scope project`. `loaded`, `render:discuss:pre` and `gate-bundle` all say "reinstall the project copy in place ... --scope project", because the round-8 WR-02 `rootsAlias` demotion applies to them. A global-scope reinstall there does not give the copy a project consent record.
+2. **Ledger fix.** The ledger fix always says "move <ledger> aside, then reinstall memanto in <scope> scope".
+   - A planted unreadable project ledger next to a healthy global install leads to a new project install, and so to a duplicate install.
+   - For a global ledger that is only `EACCES`, moving it aside drops the ledger entry of every other global capability, which then stops dispatching. A `chmod` would be the right repair.
+
+**Reproduced:**
+- `node r10a.cjs eacces`: `unreadable-files FIX: reinstall the global copy in place: ... --yes`, against `loaded FIX: reinstall the project copy in place ... --yes --scope project`.
+- `node r10h.cjs ledgerfifo`: a FIFO project ledger next to a healthy global install gives "move <project>/.gsd-capabilities.json aside, then reinstall memanto in project scope", while `loaded` names the global copy.
 
 **Fix:**
-- Take installed-manifest points only from a copy that is ledgered (`ledgerState !== 'none'`), or only from the loop points gsd-core defines (`loop-host-contract.cjs`). Drop anything else.
-- Cap the point count.
-- Build the `id` as `render:${clean(point, 64)}`, and clean every message that interpolates the point.
-
-### WR-03: In the no-gate states, `duplicate-install` tells the user to remove the project copy first, which leaves the gate-less copy and is not marked as a load error
-
-**File:** `lib/install-state.cjs:571-572`, `:277-286` (`NO_GATE_STATES` is not in `LOAD_ERROR_STATES`)
-
-**Issue:** In `global-loaded-no-gate` (`r8.cjs twonogate`), the global copy holds the id and declares no gate. The consented project copy is the only one with the gate. `duplicate-install` gives the fix "remove one copy: gsd-tools capability remove memanto --scope project (or --scope global)". That fix does not start with "fix the load error first", and its first-named action removes the ledgered, healthy project install while the gate stays off. `loaded` and `gate-bundle` correctly name the global copy as the one to reinstall, so the records point at different copies. The mirror case, `project-loaded-no-gate`, gets the same generic text.
-
-**Reproduced:** `r8.cjs twonogate`, `duplicate-install` record.
-
-**Fix:** Add `GLOBAL_NO_GATE` and `PROJECT_NO_GATE` to the "fix the load error first" set. In those states, name the loaded gate-less copy (`cls.loaded.scope`) as the one to reinstall or remove, for example: `fix the load error first (see loaded); then remove the ${other} copy only after the ${loaded} copy renders the gate`. Add a shared invariant: in a no-gate state, no fix removes a copy other than `cls.loaded`.
+- Build the record from `cls`: use `cls.copies` for the scope and dir, which already applies `rootsAlias`, and the same `installCmd(o, scope)`.
+- For a ledger, suggest a reinstall only when that scope holds the memanto copy gsd-core would load. Otherwise say "move it aside; memanto is not installed in this scope".
+- Base the fix on the error code: `EACCES`/`EPERM` gets "restore read permission on <file>", and only `ENOTREG`/`EFBIG` get "move aside".
+- Add these cases to the shared invariants: `unreadable-files` names the same scope and install command as `loaded`, and never suggests an install in a scope with no copy.
 
 ## Info
 
-### IN-01: The README promises a `loaded` warn when memanto is disabled, but doctor never emits `loaded` then
+### IN-01: A directory at `.planning/config.json` makes doctor skip gsd-core and claim that gsd-core blocks, which is false
 
-**File:** `README.md:170`, `memanto.cjs:395`, `lib/install-state.cjs:515`
+**File:** `memanto.cjs:512`, `memanto.cjs:517`, `README.md:188`
 
-**Issue:** `checks.push(recs.loaded)` runs only when `located.ok && enabled`. So the README sentence "`warn`: … or memanto is disabled so nothing was rendered" never applies, and the `DISABLED` branch of `loadedRecord` is reachable only from the table tests.
+**Issue:** `hostBlocked` tests `code === 'ENOTREG'`, which covers a directory as well as a FIFO, socket or device. gsd-core reading a directory fails at once with EISDIR and does not block. Doctor still skips `capability list` and `render-hooks` and says "gsd-core blocks reading it". README:188 says this happens only for "a FIFO or device". Repro: `node r10h.cjs cfgdir`. This fails closed, so only the wording and the lost evidence are affected.
 
-**Fix:** Drop the clause from the README, or emit `loaded` as a warn when disabled.
+**Fix:** Return the kind from `readRegularFile` (for example `fifo`, `socket`, `device`, `directory`), and set `hostBlocked` only for the first three.
 
-### IN-02: `ledgerState` treats any `_pending` key as pending; the loader requires a truthy `_pending`
+### IN-02: The README says the gate reads every project file through the safe reader, but the shipped predicate does not
 
-**File:** `lib/gate-bundle.cjs:83`; loader `capability-loader.cjs:358`
+**File:** `README.md:172`, `capability.json:63` (predicate `j()`)
 
-**Issue:** With `_pending: null` or `false`, the loader treats the entry as neither pending nor committed. For a global copy it still loads it, but doctor's text says "its ledger entry is _pending … so gsd-core does not load it". The verdict still fails closed, because `gateRuns` is null. Only the wording is wrong.
+**Issue:** "Doctor and the gate read every file in a project or capability directory this way". The predicate's `j()` reads the ledger and manifest with `statSync().isFile()` and then a plain `readFileSync`. It has no size cap and no `O_NONBLOCK`, so a FIFO can be swapped in between the check and the read. Its BLOCKED text for an unreadable global ledger also says "delete that directory by hand", the same remedy as WR-01. `capability.json` is not in this diff, so this is about the README claim only.
 
-**Fix:** Use `e._pending` truthiness for `'pending'`. A present but falsy `_pending` should be `'none'`, or a separate "malformed" state.
+**Fix:** Reword the README to say the gate's lib code (`scripts/gate.cjs` and `lib/`) uses the safe reader, and the inline predicate checks `isFile` only. Revisit the predicate text together with WR-01.
 
-### IN-03: The fixes for the no-gate states point at things doctor already ruled out
+### IN-03: The release test does not install the bumped bundle or run doctor end to end
 
-**File:** `lib/install-state.cjs:366`, `memanto.cjs:218`
+**File:** `test/release.test.cjs` (the `bumpedCopy` and `after a ${kind} release bump` tests)
 
-**Issue:** For the "declares none" case, the fix says "check that gsd-core reads memanto.enabled as true". Doctor only renders when enabled is true, so this check is already done. `render:discuss:pre` says "fix the reported load error" when no load error was reported (`gnogate`).
+**Issue:** The test runs only the heredoc, not `npm version` or the full `run:` block. It then unit-calls `gateMismatch`. A bump regression outside `gateMismatch` would still ship green, because the release job runs no tests after the bump. Examples: `ownVersion`, `releaseVersion` and `package.json` drifting apart, or a failure in the rendered predicate.
 
-**Fix:** When `!declaresGate`, give only the reinstall-in-place command. Use `renderFix` wording that does not mention a load error when `reason` is null.
+**Fix:** Port `scratchpad/r10/release.cjs` into a test. It should extract the full `run:` block and use a stub `git` with no tags, install the bumped `files` whitelist into a temp `GSD_HOME`, and assert doctor exit 0 with `loaded`, `render:discuss:pre` and `gate-bundle` ok.
 
 ---
 
-_Reviewed: 2026-11-22T06:10:00Z_
+_Reviewed: 2026-11-22T15:10:00Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
