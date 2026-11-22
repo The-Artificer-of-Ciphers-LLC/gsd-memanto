@@ -225,6 +225,63 @@ test('doctor: a hand-copied global bundle next to a project install names the gl
   assert.ok(!/capability remove memanto --scope project/.test(r.fix), `fix removes the project install: ${r.fix}`);
   assert.ok(!r.fix.includes(`delete ${bundle}`), r.fix);
   assert.ok(r.fix.includes(bundle), `fix should say the project install is kept: ${r.fix}`);
+  // Round-3 IN-02: gsd-core loads the hand-copied global copy (the loader keeps
+  // global and skips the project copy as colliding), even though capability
+  // list shows only the project row as active. The message must say so.
+  assert.ok(r.message.includes(`gsd-core loads memanto from ${stray}`), r.message);
+  assert.ok(!r.message.includes(`from ${bundle}`), `message names the project copy as loaded: ${r.message}`);
+  assert.ok(r.message.includes('skips the project copy with the same id as colliding'), r.message);
+  const loaded = d.check('loaded');
+  assert.equal(loaded && loaded.status, 'ok', JSON.stringify(loaded));
+  assert.ok(loaded.message.includes(`gsd-core loads the global copy at ${stray}`), loaded.message);
+  // The duplicate-install hint agrees: it never removes the project install,
+  // and names the unledgered global copy to delete by hand.
+  const dup = d.check('duplicate-install');
+  assert.equal(dup && dup.status, 'warn', JSON.stringify(dup));
+  assert.ok(!/--scope project/.test(dup.fix), `duplicate-install removes the project install: ${dup.fix}`);
+  assert.ok(dup.fix.includes(`delete ${stray} by hand`), dup.fix);
+});
+
+test('doctor: a global install that gsd-core skips (outside engines.gsd) next to a project install names the project copy as loaded', () => {
+  const h = env.tmpDir('memanto-home-');
+  const project = emptyAgentProject();
+  env.installBundle({ home: h });
+  const bundle = projectInstall(project, h);
+  const file = path.join(globalBundle(h), 'capability.json');
+  const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+  manifest.engines = { gsd: '>=9.0.0' };
+  fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + '\n');
+  const r = doctor(project, h, bundle).check('gate-bundle');
+  assert.equal(r && r.status, 'error', JSON.stringify(r));
+  assert.ok(r.message.includes(`would run ${globalBundle(h)}/scripts/gate.cjs, but gsd-core loads the bundle at ${bundle}`), r.message);
+});
+
+test('loadedCopy follows the loader precedence: a global capability.json wins unless gsd-core reports the global copy skipped', () => {
+  const { loadedCopy } = require('../memanto.cjs');
+  const h = env.tmpDir('memanto-home-');
+  const project = env.makeProject({ config: {} });
+  handCopyGlobal(h);
+  const scopeDirs = { global: globalBundle(h), project: path.join(project, '.gsd', 'capabilities', 'memanto') };
+  const roots = { gsdHome: h, projectRoot: project };
+  const projectActive = [{ id: 'memanto', scope: 'project', status: 'active' }];
+  const global = { scope: 'global', dir: scopeDirs.global };
+  // No render evidence: the precedence rule alone, whatever capability list says.
+  assert.deepEqual(loadedCopy({ rows: projectActive, scopeDirs, roots, failures: null }), global);
+  // The project copy collided with the global one.
+  assert.deepEqual(loadedCopy({ rows: projectActive, scopeDirs, roots, failures: ['id collides with an already-registered capability'] }), global);
+  // A ledgered global row that is not active: gsd-core skipped the global copy.
+  const globalRow = { id: 'memanto', scope: 'global', status: 'incompatible' };
+  assert.equal(loadedCopy({ rows: [globalRow], scopeDirs, roots, failures: [] }), null, 'no project copy is active');
+  assert.deepEqual(loadedCopy({ rows: [globalRow, ...projectActive], scopeDirs, roots, failures: [] }), { scope: 'project', dir: scopeDirs.project });
+  // An unledgered global copy skipped for a reason only the first-scanned copy can get.
+  const engines = ['incompatible with GSD 1.20.1 (requires engines.gsd ">=9.0.0")'];
+  assert.equal(loadedCopy({ rows: [], scopeDirs, roots, failures: engines }), null);
+  // With no global capability.json, only the active project row counts.
+  const h2 = env.tmpDir('memanto-home-');
+  assert.deepEqual(
+    loadedCopy({ rows: projectActive, scopeDirs, roots: { gsdHome: h2, projectRoot: project }, failures: null }),
+    { scope: 'project', dir: scopeDirs.project },
+  );
 });
 
 test('a global install is still preferred over a project install, as gsd-core does', () => {
