@@ -15,6 +15,10 @@ All notable changes to `@taoc/gsd-memanto` are listed here.
 - **Doctor `gate-bundle` check.** It reports an error whenever the gate would run code that is not the bundle gsd-core loaded, and names any stray or planted copy to delete.
 - **Doctor install classification.** `loaded`, `consent`, `duplicate-install` and `gate-bundle` now come from one classification of the install, so they always agree on which copy gsd-core loads and what fixes it. Doctor always checks `discuss:pre` and reports an error when no memanto gate renders there.
 
+- **Doctor checks the rendered gate is this release's gate.** The `discuss:pre` gate must be blocking with `onError: "halt"` and the exact shipped predicate command. An edited, non-blocking or other-version gate is an error.
+- **Doctor `unreadable-files` check.** A `capability.json` or ledger that is a FIFO, socket, device, symlink to one, or oversized is reported with a fix that matches the cause. Doctor and the gate read these files without blocking, so a planted FIFO cannot hang either.
+- **Release rehearsal in CI.** The suite now bumps a copy of the bundle with the release workflow's own step, installs it in both scopes, and checks doctor and the gate end to end.
+
 ### Changed
 
 - Doctor no longer runs a `gsd-tools.cjs` found inside the project. When `GSD_CORE_DIR` is set, it wins outright.
