@@ -14,7 +14,7 @@ const { resolveConfig } = require('./lib/config.cjs');
 const { cap, CONTROL_CHARS } = require('./lib/health.cjs');
 const host = require('./lib/gsd-host.cjs');
 const gateBundle = require('./lib/gate-bundle.cjs');
-const { readJsonOrNull, MANIFEST_MAX_BYTES } = require('./lib/safe-read.cjs');
+const { readJsonOrNull, plainReadBlocks, MANIFEST_MAX_BYTES, CONFIG_MAX_BYTES } = require('./lib/safe-read.cjs');
 const { classifyInstall, installRecords, renderFix, reasonClass, REASON_CLASSES, STATES, POST_COLLISION, POST_COLLISION_REASONS } = require('./lib/install-state.cjs');
 
 const USAGE = 'Usage: gsd_run memanto doctor [--raw]';
@@ -499,14 +499,18 @@ function collectChecks(cwd) {
 
   let listFailure = null;
   // Round-9 CR-01: gsd-core reads .planning/config.json with a plain read, so
-  // with a FIFO or device there every capability list and render-hooks call
-  // blocks until PROBE_TIMEOUT_MS. Doctor does not start them; it reports why.
-  const hostBlocked = !cfg.ok && cfg.kind === 'read' && cfg.code === 'ENOTREG';
-  if (located.ok && hostBlocked) {
+  // with a FIFO there, or a device that never ends, every capability list and
+  // render-hooks call blocks until PROBE_TIMEOUT_MS. Doctor does not start
+  // them; it reports why. Round-10 IN-01: only then. A directory, socket or a
+  // device that ends (/dev/null) does not block gsd-core, so doctor queries it
+  // and config-unreadable reports the actual condition.
+  const blocks = !cfg.ok && cfg.kind === 'read' && cfg.code === 'ENOTREG' ? plainReadBlocks(cfg.path, CONFIG_MAX_BYTES) : null;
+  if (located.ok && blocks) {
+    const why = blocks === 'fifo' ? 'a FIFO, which blocks until a writer opens it' : `a device whose read never ends (it has no data yet, or more than ${CONFIG_MAX_BYTES} bytes)`;
     listFailure = record(
       'capability-list',
       'error',
-      clean(`doctor did not query gsd-core (capability list, render-hooks): ${cfg.error}, and gsd-core blocks reading it`, REASON_MAX),
+      clean(`doctor did not query gsd-core (capability list, render-hooks): ${cfg.error}; gsd-core reads that file whole, and it is ${why}`, REASON_MAX * 2),
       clean(`replace ${cfg.path} with a regular JSON file, then run doctor again`, REASON_MAX),
     );
   } else if (located.ok) {

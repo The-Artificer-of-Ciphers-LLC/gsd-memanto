@@ -11,7 +11,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync, execFileSync } = require('node:child_process');
 const env = require('./helpers/gsd-env.cjs');
-const { readRegularFile, readJsonOrNull, MANIFEST_MAX_BYTES, LEDGER_MAX_BYTES } = require('../lib/safe-read.cjs');
+const { readRegularFile, readJsonOrNull, plainReadBlocks, MANIFEST_MAX_BYTES, LEDGER_MAX_BYTES } = require('../lib/safe-read.cjs');
 const gateBundle = require('../lib/gate-bundle.cjs');
 
 const POSIX = process.platform !== 'win32';
@@ -154,6 +154,71 @@ test('r9f: a FIFO at the project capability.json does not hang doctor and is rep
   assert.ok(r.fix.includes(file), r.fix);
 });
 
+// Round-10 IN-01: gsd-core reads .planning/config.json with a plain blocking
+// read (verified against the host: a FIFO and /dev/zero block it, a
+// directory, a socket and /dev/null fail or end at once). plainReadBlocks
+// says which of these would block that read.
+test('plainReadBlocks: only a FIFO, or a device that never ends, blocks a plain read', { skip: !POSIX && 'mkfifo is POSIX only' }, async (t) => {
+  const d = env.tmpDir('memanto-sr-');
+  const f = fifo(path.join(d, 'fifo.json'));
+  fs.symlinkSync(f, path.join(d, 'tofifo.json'));
+  fs.symlinkSync('/dev/zero', path.join(d, 'zero.json'));
+  fs.symlinkSync('/dev/null', path.join(d, 'null.json'));
+  fs.mkdirSync(path.join(d, 'dir.json'));
+  fs.writeFileSync(path.join(d, 'file.json'), '{}');
+  const sock = path.join(d, 's.sock');
+  const srv = require('node:net').createServer();
+  await new Promise((r) => srv.listen(sock, r));
+  t.after(() => srv.close());
+  const t0 = Date.now();
+  assert.equal(plainReadBlocks(f, 100), 'fifo');
+  assert.equal(plainReadBlocks(path.join(d, 'tofifo.json'), 100), 'fifo');
+  assert.equal(plainReadBlocks(path.join(d, 'zero.json'), 100), 'device');
+  for (const name of ['null.json', 'dir.json', 'file.json', 's.sock', 'missing.json']) assert.equal(plainReadBlocks(path.join(d, name), 100), null, name);
+  assert.ok(Date.now() - t0 < FAST_MS);
+});
+
+function configProject(h, make) {
+  const project = env.makeProject({ phaseDirs: ['01-test'] });
+  env.installBundle({ home: h });
+  const file = path.join(project, '.planning', 'config.json');
+  fs.rmSync(file, { force: true });
+  make(file);
+  return { project, file };
+}
+
+// Round-10 IN-01 (reviewer's r10h.cjs cfgdir): a directory does not block
+// gsd-core, so doctor queries it and reports the actual condition.
+for (const [mode, make] of [
+  ['a directory', (f) => fs.mkdirSync(f)],
+  ['a symlink to /dev/null', (f) => fs.symlinkSync('/dev/null', f)],
+]) {
+  test(`a .planning/config.json that is ${mode} is reported as it is, and doctor still queries gsd-core`, { skip: !POSIX && 'POSIX device files' }, () => {
+    const h = env.tmpDir('memanto-home-');
+    const { project, file } = configProject(h, make);
+    const { ms, d } = doctorRun(project, h);
+    assert.equal(d.error, undefined, `doctor did not finish: ${d.error && d.error.code} after ${ms} ms`);
+    const rep = JSON.parse(d.stdout);
+    const cu = rep.checks.find((c) => c.id === 'config-unreadable');
+    assert.ok(cu && cu.message.includes(file) && cu.message.includes(mode === 'a directory' ? 'it is a directory, not a regular file' : 'a symlink to a device'), JSON.stringify(cu));
+    for (const c of rep.checks) assert.ok(!/blocks reading|did not query gsd-core/.test(c.message), `${c.id}: ${c.message}`);
+    assert.ok(rep.checks.some((c) => c.id === 'render:discuss:pre'), JSON.stringify(rep.checks.map((c) => c.id)));
+  });
+}
+
+test('a .planning/config.json that is a symlink to /dev/zero is not read by gsd-core either; doctor says why', { skip: !POSIX && 'POSIX device files' }, () => {
+  const h = env.tmpDir('memanto-home-');
+  const { project, file } = configProject(h, (f) => fs.symlinkSync('/dev/zero', f));
+  const { ms, d } = doctorRun(project, h);
+  assert.equal(d.error, undefined, `doctor did not finish: ${d.error && d.error.code} after ${ms} ms`);
+  assert.ok(ms < FAST_MS, `doctor took ${ms} ms`);
+  const rep = JSON.parse(d.stdout);
+  const cl = rep.checks.find((c) => c.id === 'capability-list');
+  assert.ok(cl && cl.message.includes(`doctor did not query gsd-core (capability list, render-hooks): ${file} is unreadable`), JSON.stringify(cl));
+  assert.ok(cl.message.includes('never ends'), cl.message);
+  assert.ok(!rep.checks.some((c) => c.id.startsWith('render:')), JSON.stringify(rep.checks.map((c) => c.id)));
+});
+
 test('a FIFO at .planning/config.json does not hang doctor; config-unreadable names it', { skip: !POSIX && 'mkfifo is POSIX only' }, () => {
   const h = env.tmpDir('memanto-home-');
   const project = env.makeProject({ phaseDirs: ['01-test'] });
@@ -169,4 +234,7 @@ test('a FIFO at .planning/config.json does not hang doctor; config-unreadable na
   assert.ok(r, JSON.stringify(rep.checks.map((c) => c.id)));
   assert.equal(r.status, 'error', JSON.stringify(r));
   assert.match(r.message, /FIFO/);
+  // Round-10 IN-01: only here does gsd-core really block, and doctor says so.
+  const cl = rep.checks.find((c) => c.id === 'capability-list');
+  assert.ok(cl && cl.message.includes('doctor did not query gsd-core') && cl.message.includes('a FIFO, which blocks until a writer opens it'), JSON.stringify(cl));
 });

@@ -185,7 +185,7 @@ Stray or planted gate code is always reported by `gate-bundle`, by directory. A 
 
 When the project root is `GSD_HOME` (or `GSD_HOME` is a symlink to it), gsd-core treats the one `.gsd/capabilities` directory as a single project-scope copy that needs a consent record, and doctor does the same: it compares the directories by their real paths, reports one copy, and gives the re-consent fix (`gsd-tools capability install ... --scope project`).
 
-Doctor reports `check-probe`, `capability-list` or `doctor-internal` as an `error` only when doctor itself fails internally, with one exception: when `.planning/config.json` is a FIFO or device, `config-unreadable` names it and `capability-list` says doctor did not query gsd-core, because gsd-core would block reading that file.
+Doctor reports `check-probe`, `capability-list` or `doctor-internal` as an `error` only when doctor itself fails internally, with one exception: when `.planning/config.json` is a FIFO, or a device whose read never ends (such as a symlink to `/dev/zero`), `config-unreadable` names it and `capability-list` says doctor did not query gsd-core, because gsd-core reads that file whole and would block. Any other config file that is not a regular file (a directory, a socket, `/dev/null`) does not block gsd-core, so doctor still queries it, and `config-unreadable` reports what the file is.
 
 ## Fail-open caveat
 
