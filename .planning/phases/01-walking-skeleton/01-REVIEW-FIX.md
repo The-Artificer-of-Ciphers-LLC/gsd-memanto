@@ -72,6 +72,22 @@ Tests: both reviewer repro modes (`fragment` and `validation`), with a global in
 **Commit:** `473d9e8`
 **Applied fix:** Both checks in `.github/workflows/publish.yml` (the refusal step and the push re-check) capture the `git config --local --name-only --get-regexp` exit code. Exit 0 prints the key names and refuses. Exit 1 continues. Any other code fails the step with `git config failed (exit <rc>) ...`. The push re-check also names the staged version to reject. The hermetic test extracts each check from the workflow up to a `# End of the git config refusal.` marker. It runs the check with bash against plain fixture files under `os.tmpdir()`, replacing `--local` with `git config --file`: a clean file continues, a planted `insteadOf` refuses without printing its value, and an unparseable file (git exits 128) fails. No repository's `.git/config` is read or written. `actionlint` is clean.
 
+## Owner follow-ups
+
+The owner answered the two human checks above after round 4 was merged into main (`2750ff1`). Both answers were implemented test-first, one commit each, on top of the round-4 branch. `npm test`: 417 tests, 416 pass, 0 fail, 1 skipped.
+
+### Follow-up 1 (CR-01): accept an upper-case scheme only
+
+**Commit:** `a16d035`
+**Files:** `lib/health.cjs`, `README.md`, `test/health.test.cjs`
+**Applied change:** The scheme alone is matched case-insensitively (`HTTP://`, `Https://`), and it is shown and probed in lower case. Everything else in the rule is unchanged: a `:` inside a password must still be written `%3A`, and hosts that Node rewrites (`0x7f.1`) are still rejected. New accepted rows: `HTTP://localhost:8000`, `HTTPS://u:p%40ss@h:1/base` and `Https://h:1`, each shown in lower case with no userinfo or base path. New rejected rows: `HTTP://0x7f.1:8000`, `HTTPS://alice:s3c:ret@...`, `Http://alice:s3cret%40...` and `FTP://...`. A gate run with an upper-case scheme, userinfo and a base path never prints the secrets in the health line or the curl hint. A `checkHealth` case confirms the decoded Basic header and the base path. The README scheme bullet is updated.
+
+### Follow-up 2 (WR-01): CI drift test for the loader's skip order
+
+**Commit:** `94afcd5`
+**Files:** `memanto.cjs`, `test/loader-drift.test.cjs` (new)
+**Applied change:** `POST_COLLISION` is now built from an exported, ordered `POST_COLLISION_REASONS` list. `test/loader-drift.test.cjs` reads `<GSD_CORE_DIR or ~/.claude/gsd-core>/bin/lib/capability-loader.cjs` as text, so the builtin-only `require()` test stays green. It collects every `skip('...')` reason in source order. It fails with a named message in three cases: a listed reason now comes before the `id collides` check; the loader has a new reason after that check; or the order no longer matches the list. `overlay processing error` is allowed only while it sits in the per-candidate `catch` block, because that block can run at any stage. The test passes against the local 1.20.1 loader and against the 1.22.0 loader read from `npm pack @opengsd/gsd-core@1.22.0`. The two loaders give the same skip reasons in the same order, at the same lines (680 to 906). Three mutated copies of the loader all fail with the expected message: a reason moved early, two reasons swapped, and a new reason. The CI matrix (`gsd: ["1.20.1", "1.22.0"]`) runs the test against both releases through `GSD_CORE_DIR`.
+
 ---
 
 _Fixed: 2026-11-22T02:31:45Z_
