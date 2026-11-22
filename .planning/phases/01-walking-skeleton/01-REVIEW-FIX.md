@@ -1,21 +1,21 @@
 ---
 phase: 01-walking-skeleton
-fixed_at: 2026-11-22T05:10:00Z
+fixed_at: 2026-11-22T13:20:00Z
 review_path: .planning/phases/01-walking-skeleton/01-REVIEW.md
-iteration: 8
-findings_in_scope: 5
-fixed: 5
+iteration: 9
+findings_in_scope: 7
+fixed: 7
 skipped: 0
 status: all_fixed
 ---
 
-# Phase 1: Code Review Fix Report (rounds 4 to 8)
+# Phase 1: Code Review Fix Report (rounds 4 to 9)
 
-The frontmatter counts are for round 8 (the current 01-REVIEW.md): 5 findings, all fixed. See "Round 8" at the end. Round 8 replaced the round-7 classifier evidence and states described in "Round 7". The round-4 report, its owner follow-ups and the round-5 and round-6 sections are kept below unchanged. Round 7 replaced the round-5 and round-6 doctor code they describe (`loadedCopy`, `notLoadedText`, `notLoadedFix`, `loadedCheck`, `gateBundleCheck`).
+The frontmatter counts are for round 9 (the current 01-REVIEW.md): 7 findings, all fixed. See "Round 9" at the end. Round 9 changes the round-8 render point rule (`declaredPoints` is now `pointsToRender`) and the no-gate fixes described in "Round 8". Round 8 replaced the round-7 classifier evidence and states described in "Round 7". The round-4 report, its owner follow-ups and the round-5 and round-6 sections are kept below unchanged. Round 7 replaced the round-5 and round-6 doctor code they describe (`loadedCopy`, `notLoadedText`, `notLoadedFix`, `loadedCheck`, `gateBundleCheck`).
 
-**Fixed at:** 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5), 2026-11-22T03:21:45Z (round 6), 2026-11-22T03:41:23Z (round 7), 2026-11-22T05:10:00Z (round 8)
-**Source review:** .planning/phases/01-walking-skeleton/01-REVIEW.md, which is now round 8, the re-review of the round-7 fixes. Round 7 re-reviewed the round-6 fixes. Earlier rounds: round 4 re-reviewed the round-3 fixes, round 5 the round-4 fixes and owner follow-ups, and round 6 the round-5 fixes.
-**Iteration:** 4, then 5, 6, 7 and 8
+**Fixed at:** 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5), 2026-11-22T03:21:45Z (round 6), 2026-11-22T03:41:23Z (round 7), 2026-11-22T05:10:00Z (round 8), 2026-11-22T13:20:00Z (round 9)
+**Source review:** .planning/phases/01-walking-skeleton/01-REVIEW.md, which is now round 9, the re-review of the round-8 fixes. Round 8 re-reviewed the round-7 fixes, and round 7 the round-6 fixes. Earlier rounds: round 4 re-reviewed the round-3 fixes, round 5 the round-4 fixes and owner follow-ups, and round 6 the round-5 fixes.
+**Iteration:** 4, then 5, 6, 7, 8 and 9
 
 Earlier rounds:
 - Round 1 (14 findings, all fixed): commits `851e2c2..d684020`.
@@ -338,8 +338,91 @@ Round 8 fixes the five findings of the round-8 re-review (CR-01, WR-01, WR-02, W
 
 The reviewer's `r8.cjs` also has a `gtamper` mode (the global `scripts/gate.cjs` replaced after install). It is not one of the five findings: global bundles are not hash-bound by gsd-core, and doctor reports the gate as rendering and running the installed bundle. It is left as it is.
 
+## Round 9
+
+Round 9 fixes all seven findings of the round-9 re-review (CR-01, WR-01, WR-02, WR-03, IN-01, IN-02, IN-03), on the owner's decision. Each finding has its own commit, and each commit's tests failed before its fix (the red counts are below).
+
+| Commit | Finding | Red before the fix |
+|--------|---------|--------------------|
+| `bc16125` | CR-01 | 4 of 9 in `test/safe-read.test.cjs` (the r9f doctor run and the config FIFO run killed at 30 s, the lib FIFO child killed at 5 s, the oversized manifest read) |
+| `9d4e76a` | WR-01 | 5 (r9h `gexit0`, `gnonblock`, `gspace` and two table cases) |
+| `395e179` | WR-01, follow-up | 3 (`gexit0` and `gspace` with doctor run from the edited global bundle, the hash pin) |
+| `f328f49` | WR-02 | 3 of 3 in `test/render-points.test.cjs` |
+| `bf346bb` | WR-03 | 4 (r8 `twonogate` doctor run, and the table cases `twonogate`, r9 `gnonblock`, project-loaded-no-gate) |
+| `dfb8811` | IN-01 | 4 (the doctor disabled case and three disabled table cases) |
+| `29f10e2` | IN-02 | 1 |
+| `8dc070c` | IN-03 | 4 (r8 `gnogate` and `twonogate` doctor runs, two table cases) |
+
+`npm test`: 508 tests, 507 pass, 0 fail, 1 skipped. The gates ran in the harness worktree `.claude/worktrees/agent-ae9b1ba121e2494d9` (not the main checkout), with a temp `GSD_HOME` per test. The only network targets were the closed port `127.0.0.1:9`, the fake API, and one `GET http://localhost:8000/health` run of the reviewer's `r9h.cjs` against this worktree.
+
+### CR-01: a FIFO at the project capability.json hung doctor
+
+- New `lib/safe-read.cjs` `readRegularFile(file, maxBytes)` is now the only reader for every file doctor and the gate's lib code read from a project or capability directory: both `capability.json` files, both ledgers, `.planning/config.json` and the doctor's own manifest. The steps are: `lstat`, then refuse a FIFO, socket, device or directory, or a symlink to one; check the size; open with `O_NONBLOCK`; then `fstat` the fd and re-check the type and size. Only `ENOENT` is absent. The caps are `MANIFEST_MAX_BYTES` = 1 MiB (also used for `config.json`) and `LEDGER_MAX_BYTES` = 8 MiB, which is gsd-core's own ledger cap. No new timeout was added.
+- `lib/gate-bundle.cjs`, `lib/config.cjs` and `memanto.cjs readJson` use it. Doctor reads the installed manifests once (`readManifests`) and passes them to `gatherEvidence`.
+- New doctor record `unreadable-files` (error): "<file> is unreadable: it is a FIFO, not a regular file". The fix reinstalls a ledgered copy in place, or moves the file aside.
+- A FIFO `.planning/config.json` gives `config-unreadable`, naming the FIFO. gsd-core reads that file with a plain read and would block, so doctor skips `capability list` and `render-hooks` and reports this in `capability-list`.
+- Repro: `r9f.cjs <worktree>` finishes in 0.8 s, with `unreadable-files`, `consent` and the two health errors.
+
+### WR-01: an `exit 0` or non-blocking global gate gave loaded, render and gate-bundle ok
+
+- A rendered memanto gate counts only when it is the shipped gate. That means kind `gate`, `blocking === true` and `onError === 'halt'` (checked against constants and against the own manifest), a `command-exit-zero` predicate, and a command exactly equal to the own manifest's command, whose sha256 must also equal `SHIPPED_GATE_COMMAND_SHA256` in `memanto.cjs`. A test ties that constant to `capability.json`.
+- The follow-up commit `395e179` was needed because the own manifest sits in the same editable bundle. Doctor run from the edited global bundle, as `r9h.cjs` runs it, still said ok after `9d4e76a`.
+- On a mismatch, `render:discuss:pre`, `loaded` and `gate-bundle` are errors: "the installed memanto gate at discuss:pre does not match this release: <fields>". The fix reinstalls the loaded copy in place at this release. The classifier carries `render.mismatch` in the no-gate states, and the shared invariants derive `gateRendered` from the same shipped-gate test.
+- `README.md` `gate-bundle` (line 174 in the review) now states this. The fail-open caveat records the owner-approved host limit: a hand-edited global `scripts/gate.cjs` or `memanto.cjs` cannot be detected, because global bundles are not hash-bound.
+- Repros: `r9h-wt.cjs gexit0` (field `command`) and `gnonblock` (fields `blocking, onError`) both give the three errors and exit 1.
+
+### WR-02: a planted project manifest added unbounded renders and raw control bytes
+
+- `LOOP_POINTS` holds the 12 points of gsd-core's `loop-host-contract.cjs`. `test/render-points.test.cjs` reads the host file as text and fails if the list drifts.
+- `pointsToRender(own, loaded)` gives `discuss:pre` and the own manifest's points. After a first classification it adds the points of the installed manifest gsd-core loads, if any. Only known points are used, at most 12. A skipped or unactivated manifest adds nothing.
+- `render:<point>` cleans the point into the id and the messages. A final pass in `collectChecks` replaces every control character in every id, message and fix.
+- Repro: `r9p2.cjs 3 <worktree>` and `r9p2.cjs 40 <worktree>` each give 1 render record, 0 ESC bytes, and finish in 0.66 s.
+
+### WR-03: duplicate-install suggested removing the healthy project install in the no-gate states
+
+- In `global-loaded-no-gate` and `project-loaded-no-gate`, `duplicate-install` now says "fix the load error first (see loaded): <the loaded record's fix>; keep the <other> copy at <dir> until the <loaded> copy renders the shipped gate". An unledgered loaded copy keeps its delete-by-hand fix.
+- New shared invariant in `test/helpers/install-invariants.cjs`: in a no-gate state, no record's fix runs `capability remove memanto` for, or deletes, a copy other than the loaded one. Stray code is exempt. Without the fix it fails `twonogate` and r9 `gnonblock` in the stripped (shared-rules-only) table; see `R9_WR03_dup` below.
+
+### IN-01, IN-02, IN-03
+
+- IN-01: `loaded` is printed whenever gsd-core is located. With memanto disabled it is a warn: "memanto.enabled is not true, so gsd-core loads no memanto hook (...)". The README `loaded` row quotes it.
+- IN-02: `ledgerState` returns `pending` only for a truthy `_pending`, as the loader's `ledgerOverlayIds` does. A present but falsy `_pending` is `none`, and the entry is not committed. Tested with `{op}`, `true`, `null`, `false`, `0` and `''`.
+- IN-03: the no-gate and declares-none fixes are now "reinstall the <scope> copy at <dir> in place at this release (<why>): <install command>". There is no memanto.enabled check (gsd-core loaded the copy). `render:<point>` records are built after the classification. With no reported load error, or only the `id collides` of the skipped copy, the fix is the loaded record's own remedy. `renderFix(null)` returns the reinstall alone.
+
+### Mutation run
+
+The runner is `scratchpad/r9fix/mutate9.cjs`, adapted from `r8/mutate8.cjs`. It works on temp copies of the working tree. The full run covers `install-state`, `gate-bundle`, `safe-read`, `render-points` and `doctor`. The shared run is the table with every per-case assertion stripped.
+
+- RED: the round-9 base `7612bf8` with the round-9 tests fails 21. `test/safe-read.test.cjs` counts once, because it cannot load without `lib/safe-read.cjs`.
+- Unmutated working tree: full 0, shared 0.
+- All 30 mutants are caught: the 15 round-8 mutants, re-expressed on the round-9 text, and 15 round-9 mutants that each revert one fix.
+
+| Mutant | What it reverts | Shared-rules table failures | Full run failures |
+|--------|-----------------|-----------------------------|-------------------|
+| MD, ME, MG, MH, MI | round-8 reviewer mutants | 4, 4, 28, 5, 4 | 6, 7, 47, 6, 6 |
+| MJ, MK, MN, MO | round-8 CR-01 | 1, 3, 1, 7 | 2, 6, 1, 12 |
+| ML, MR, MM, MS | round-8 WR-01, WR-02, IN-01 | 4, 1, 4, 1 | 6, 1, 7, 2 |
+| MQ, MP | round-8 `memanto.cjs` (realpath, render points) | 0, 0 | 1, 31 |
+| R9_CR01_plainread | the installed manifests read with a plain `readFileSync` | 0 | 1 (r9f, killed at 30 s) |
+| R9_CR01_reader | no regular-file check in `readRegularFile` | 0 | 5 |
+| R9_CR01_cap | no size cap | 0 | 2 |
+| R9_CR01_record | no `unreadable-files` record | 0 | 1 |
+| R9_WR01_anygate | any memanto gate counts (round-8 `isMemantoGate`) | 0 | 3 |
+| R9_WR01_flags | blocking and onError not checked | 0 | 1 |
+| R9_WR01_command | the command not checked | 0 | 2 |
+| R9_WR01_sha | only the own-manifest command checked (no sha256 pin) | 0 | 2 |
+| R9_WR02_points | every installed manifest point rendered, no cap | 0 | 2 |
+| R9_WR02_clean | as above, plus no cleaning of the id and no final pass | 0 | 2 |
+| R9_WR03_dup | the generic duplicate-install fix in the no-gate states | 2 (the new shared invariant) | 4 |
+| R9_IN01_loaded | `loaded` printed only when enabled | 0 | 1 |
+| R9_IN02_pending | any `_pending` key is pending | 0 | 1 |
+| R9_IN03_enabled | the no-gate fix checks memanto.enabled again | 0 | 7 |
+| R9_IN03_render | the render fix says to fix an unreported load error | 0 | 2 |
+
+The shared rules alone catch R9_WR03_dup, so the new invariant would have caught WR-03. The other round-9 mutants are in doctor code that the classifier table does not reach, and the doctor repros catch them.
+
 ---
 
-_Fixed: 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5), 2026-11-22T03:21:45Z (round 6), 2026-11-22T03:41:23Z (round 7), 2026-11-22T05:10:00Z (round 8)_
+_Fixed: 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5), 2026-11-22T03:21:45Z (round 6), 2026-11-22T03:41:23Z (round 7), 2026-11-22T05:10:00Z (round 8), 2026-11-22T13:20:00Z (round 9)_
 _Fixer: Claude (gsd-code-fixer)_
-_Iteration: 8_
+_Iteration: 9_
