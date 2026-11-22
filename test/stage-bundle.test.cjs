@@ -54,3 +54,40 @@ test('--stage-only keeps the staged directory and names its root for cleanup', (
   assert.ok(fs.existsSync(path.join(out.stagedDir, 'capability.json')), JSON.stringify(out));
   assert.deepEqual(out.cleanup, [path.dirname(out.stagedDir)]);
 });
+
+// --- Round-2 IN-02: no temp directory is left behind on a failure path ---
+
+function memantoEntries(dir) {
+  return fs.readdirSync(dir).filter((n) => n.startsWith('memanto-'));
+}
+
+test('a failed install into a fresh temp home removes that home and the staging copy', () => {
+  const tmp = env.tmpDir('memanto-tmpdir-');
+  const noCore = env.tmpDir('memanto-nocore-');
+  const res = spawnSync(process.execPath, [SCRIPT, '--json'], {
+    cwd: env.REPO_ROOT,
+    encoding: 'utf8',
+    env: { ...process.env, TMPDIR: tmp, GSD_CORE_DIR: noCore, GSD_WORKSTREAM: '', GSD_PROJECT: '' },
+  });
+  assert.equal(res.status, 1, `${res.stdout}${res.stderr}`);
+  assert.match(res.stderr, /stage-bundle: /);
+  assert.deepEqual(memantoEntries(tmp), [], `left behind in ${tmp}`);
+});
+
+for (const [label, make] of [
+  ['a symlink', (repo) => fs.symlinkSync('a.txt', path.join(repo, 'b'))],
+  ['a non-regular file', (repo) => fs.mkdirSync(path.join(repo, 'b'))],
+]) {
+  test(`staging refuses ${label} and removes its staging root`, () => {
+    const { stage, StageError } = require('../tools/stage-bundle.cjs');
+    const repo = env.tmpDir('memanto-fakerepo-');
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'a');
+    make(repo);
+    const tmpRoot = env.tmpDir('memanto-tmpdir-');
+    assert.throws(
+      () => stage({ repoRoot: repo, files: ['a.txt', 'b'], tmpRoot }),
+      (e) => e instanceof StageError && /refusing to stage/.test(e.message),
+    );
+    assert.deepEqual(fs.readdirSync(tmpRoot), [], 'staging root left behind');
+  });
+}

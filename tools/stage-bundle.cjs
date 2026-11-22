@@ -14,7 +14,9 @@
 // the scope directory now holds the installed bundle. What is left for the
 // caller to delete is listed in `cleanup` (--json) or on a "cleanup:" line:
 // the staged root for --stage-only, and the fresh temp GSD_HOME when no
-// --home or --real was given. --home and --real directories are never listed.
+// --home or --real was given. --home and --real directories are never listed. On a failure (IN-02, round
+// 2) the script removes the staging root and a fresh temp GSD_HOME it created
+// before it exits, so a failed run leaves no memanto-* directory behind.
 
 const fs = require('node:fs');
 const os = require('node:os');
@@ -23,9 +25,12 @@ const { spawnSync } = require('node:child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 
+// Thrown for every refusal or failure; main() prints it and exits 1. A throw
+// (not process.exit) lets each step remove its own temp directories first.
+class StageError extends Error {}
+
 function fail(msg) {
-  process.stderr.write(`stage-bundle: ${msg}\n`);
-  process.exit(1);
+  throw new StageError(msg);
 }
 
 function parseArgs(argv) {
@@ -55,9 +60,9 @@ function parseArgs(argv) {
   return opts;
 }
 
-function packFileList() {
+function packFileList(repoRoot = REPO_ROOT) {
   const res = spawnSync('npm', ['pack', '--dry-run', '--json'], {
-    cwd: REPO_ROOT,
+    cwd: repoRoot,
     encoding: 'utf8',
     env: { ...process.env, npm_config_loglevel: 'silent' },
   });
@@ -74,24 +79,30 @@ function packFileList() {
   return first.files.map((f) => f.path);
 }
 
-function stage() {
-  const files = packFileList();
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memanto-stage-'));
-  const stagedDir = path.join(root, 'memanto');
-  fs.mkdirSync(stagedDir);
-  for (const rel of files) {
-    const src = path.resolve(REPO_ROOT, rel);
-    if (src !== REPO_ROOT && !src.startsWith(REPO_ROOT + path.sep)) {
-      fail(`refusing to stage path outside the repo: ${rel}`);
+// repoRoot, files and tmpRoot are injectable for tests only.
+function stage({ repoRoot = REPO_ROOT, files = null, tmpRoot = os.tmpdir() } = {}) {
+  const list = files || packFileList(repoRoot);
+  const root = fs.mkdtempSync(path.join(tmpRoot, 'memanto-stage-'));
+  try {
+    const stagedDir = path.join(root, 'memanto');
+    fs.mkdirSync(stagedDir);
+    for (const rel of list) {
+      const src = path.resolve(repoRoot, rel);
+      if (src !== repoRoot && !src.startsWith(repoRoot + path.sep)) {
+        fail(`refusing to stage path outside the repo: ${rel}`);
+      }
+      const st = fs.lstatSync(src);
+      if (st.isSymbolicLink()) fail(`refusing to stage symlink: ${rel}`);
+      if (!st.isFile()) fail(`refusing to stage non-regular file: ${rel}`);
+      const dest = path.join(stagedDir, rel);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.copyFileSync(src, dest);
     }
-    const st = fs.lstatSync(src);
-    if (st.isSymbolicLink()) fail(`refusing to stage symlink: ${rel}`);
-    if (!st.isFile()) fail(`refusing to stage non-regular file: ${rel}`);
-    const dest = path.join(stagedDir, rel);
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.copyFileSync(src, dest);
+    return stagedDir;
+  } catch (e) {
+    fs.rmSync(root, { recursive: true, force: true });
+    throw e;
   }
-  return stagedDir;
 }
 
 function gsdToolsPath() {
@@ -113,19 +124,31 @@ function install(stagedDir, opts) {
   }
   const args = [gsdToolsPath(), 'capability', 'install', stagedDir, '--yes'];
   if (opts.scope) args.push('--scope', opts.scope);
-  const res = spawnSync(process.execPath, args, {
-    cwd: opts.project || path.dirname(stagedDir),
-    encoding: 'utf8',
-    env,
-  });
-  // The staging copy is no longer needed once the installer has run (it copies
-  // the bundle into the scope directory), whatever the outcome.
-  fs.rmSync(path.dirname(stagedDir), { recursive: true, force: true });
-  if (res.error) fail(`gsd-tools failed to start: ${res.error.message}`);
+  let res;
+  try {
+    res = spawnSync(process.execPath, args, {
+      cwd: opts.project || path.dirname(stagedDir),
+      encoding: 'utf8',
+      env,
+    });
+  } finally {
+    // The staging copy is no longer needed once the installer has run (it copies
+    // the bundle into the scope directory), whatever the outcome.
+    fs.rmSync(path.dirname(stagedDir), { recursive: true, force: true });
+  }
+  // IN-02: a fresh temp home that holds no result is removed before failing.
+  const dropFreshHome = () => {
+    if (freshHome) fs.rmSync(home, { recursive: true, force: true });
+  };
+  if (res.error) {
+    dropFreshHome();
+    fail(`gsd-tools failed to start: ${res.error.message}`);
+  }
   let result;
   try {
     result = JSON.parse(res.stdout);
   } catch {
+    dropFreshHome();
     fail(`capability install printed non-JSON stdout (exit ${res.status}): ${res.stdout}${res.stderr}`);
   }
   return { home: opts.real ? null : home, freshHome, install: result, status: res.status, stderr: res.stderr };
@@ -156,4 +179,15 @@ function main() {
   }
 }
 
-main();
+if (require.main === module) {
+  try {
+    main();
+  } catch (e) {
+    if (!(e instanceof StageError)) throw e;
+    process.stderr.write(`stage-bundle: ${e.message}\n`);
+    process.exit(1);
+  }
+}
+
+// stage, install and StageError are exported for tests only.
+module.exports = { stage, install, StageError };
