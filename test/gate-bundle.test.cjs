@@ -342,6 +342,54 @@ test('loadedCopy: a skip reason that names the global copy means it is not loade
   }
   // A collision proves the global copy holds the id.
   assert.equal(loadedCopy({ rows, scopeDirs, roots, failures: ['id collides with an already-registered capability'] }).scope, 'global');
+  // Round-5 WR-01: a post-collision reason proves only that the global copy did
+  // not claim the id. When renders succeeded and none held a memanto hook,
+  // gsd-core loaded no copy at all, whatever the reasons say.
+  const squat = 'owns config key "memanto.enabled" already owned by another capability';
+  for (const failures of [[squat], [squat, squat], ['failed validation: x', squat], []]) {
+    assert.equal(loadedCopy({ rows, scopeDirs, roots, failures, rendered: false }), null, JSON.stringify(failures));
+  }
+  assert.deepEqual(loadedCopy({ rows, scopeDirs, roots, failures: [squat], rendered: true }), { scope: 'project', dir: projectDir });
+});
+
+// Round-5 WR-01 repro: a hand-copied global capability squats the config key
+// memanto.enabled, so gsd-core skips BOTH memanto copies (global install and
+// consented project install) for the same post-collision reason and renders no
+// memanto hook. No doctor record may claim a loaded copy.
+test('round-5 repro: when gsd-core skips both copies, loaded is an error and no record claims a loaded copy', () => {
+  const h = env.tmpDir('memanto-home-');
+  const project = emptyAgentProject();
+  env.installBundle({ home: h });
+  const bundle = projectInstall(project, h);
+  const sq = path.join(h, '.gsd', 'capabilities', 'aaa-squat');
+  fs.mkdirSync(sq, { recursive: true });
+  fs.writeFileSync(
+    path.join(sq, 'capability.json'),
+    JSON.stringify({
+      id: 'aaa-squat', role: 'feature', title: 'squat', description: 'squat', version: '0.0.1', tier: 'full', requires: [],
+      runtimeCompat: { supported: ['*'], unsupported: [] }, skills: [], agents: [],
+      config: { 'memanto.enabled': { type: 'boolean', default: false, description: 'x' } }, steps: [], contributions: [], gates: [],
+    }),
+  );
+  assert.equal(env.memantoHooks(env.renderHooks('discuss:pre', { cwd: project, home: h })).length, 0, 'the repro no longer skips both copies');
+  const d = doctor(project, h, bundle);
+  assert.equal(d.status, 1, JSON.stringify(d.rep));
+  const loaded = d.check('loaded');
+  assert.equal(loaded.status, 'error', JSON.stringify(loaded));
+  assert.ok(loaded.message.includes('gsd-core loaded neither memanto copy'), loaded.message);
+  assert.ok(loaded.message.includes('owns config key "memanto.enabled"'), loaded.message);
+  assert.ok(loaded.message.includes('both copies'), `the per-copy count was lost: ${loaded.message}`);
+  for (const id of ['loaded', 'duplicate-install', 'gate-bundle']) {
+    const r = d.check(id);
+    for (const claim of ['loads the project copy', 'loads the global copy', 'loads the project one', 'keeps the global one', 'loads the bundle at', 'loads memanto from', 'runs the installed bundle gsd-core loads']) {
+      assert.ok(!r.message.includes(claim), `${id} claims a loaded copy (${claim}): ${r.message}`);
+    }
+    assert.ok(!/reinstall|capability install/.test(r.fix) || r.fix.includes('load error'), `${id} fix ignores the load error: ${r.fix}`);
+  }
+  const gb = d.check('gate-bundle');
+  assert.equal(gb.status, 'error', JSON.stringify(gb));
+  assert.ok(gb.message.includes('gsd-core loaded neither memanto copy'), gb.message);
+  assert.ok(d.check('duplicate-install').message.includes('gsd-core loaded neither of them'), d.check('duplicate-install').message);
 });
 
 // The reviewer's repro (modes fragment and validation): a global capability

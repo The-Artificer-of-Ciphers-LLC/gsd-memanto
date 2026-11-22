@@ -153,17 +153,17 @@ const REJECTED = [
 const ACCEPTED = [
   // [value, displayBase output]
   ['http://localhost:8000', 'http://localhost:8000'],
-  ['https://u:p%40ss@h:1/base', 'https://h:1/<base path>'],
+  ['https://u:p%40ss@h:1/base', 'https://h:1/BASE_PATH'],
   ['http://[::1]:8000', 'http://[::1]:8000'],
   ['http://h:1', 'http://h:1'],
   ['https://u:p@h:1/', 'https://h:1'],
   ['http://@host', 'http://host'],
-  ['http://@host:8000/api', 'http://host:8000/<base path>'],
+  ['http://@host:8000/api', 'http://host:8000/BASE_PATH'],
   ['http://u:@h:1', 'http://h:1'],
-  ['http://Memanto.Example:8080/a/b/', 'http://memanto.example:8080/<base path>'],
+  ['http://Memanto.Example:8080/a/b/', 'http://memanto.example:8080/BASE_PATH'],
   // Owner follow-up: the scheme is matched case-insensitively and shown in lower case.
   ['HTTP://localhost:8000', 'http://localhost:8000'],
-  ['HTTPS://u:p%40ss@h:1/base', 'https://h:1/<base path>'],
+  ['HTTPS://u:p%40ss@h:1/base', 'https://h:1/BASE_PATH'],
   ['Https://h:1', 'https://h:1'],
 ];
 // Substrings of an accepted value that are never printed (userinfo and base path).
@@ -226,8 +226,8 @@ test('an upper-case scheme with userinfo and a base path is probed at the accept
   const r = runGate({ backend_url: `${base}/tenant-42`, api_url: servers.ok.url.replace('http://', 'HTTP://') });
   assert.deepEqual(r.ids, ['backend-health'], r.message);
   const line = lineFor(r, 'backend-health');
-  assert.ok(line.includes(`${servers.closed.url}/<base path>/health is not healthy (connection)`), line);
-  assert.ok(line.includes(`curl -fsS ${servers.closed.url}/<base path>/health`), line);
+  assert.ok(line.includes(`${servers.closed.url}/BASE_PATH/health is not healthy (connection)`), line);
+  assert.ok(line.includes(`curl -fsS '${servers.closed.url}/BASE_PATH/health'`), line);
   for (const secret of ['alice', 's3cret', 'tenant-42', 'HTTP']) assert.ok(!r.message.includes(secret), `leaked ${secret}: ${r.message}`);
 });
 
@@ -242,7 +242,7 @@ test('checkHealth probes an upper-case-scheme URL with the decoded Basic header 
 
 test('displayBase never prints userinfo or a base path', () => {
   const out = displayBase('https://alice:s3cret@memanto.internal:8443/tenant-42/v1');
-  assert.equal(out, 'https://memanto.internal:8443/<base path>');
+  assert.equal(out, 'https://memanto.internal:8443/BASE_PATH');
   for (const secret of ['alice', 's3cret', 'tenant-42']) assert.ok(!out.includes(secret), out);
 });
 
@@ -270,10 +270,40 @@ test('the health line and curl hint of an unhealthy URL with userinfo and a base
   const r = runGate({ backend_url: `${base}/tenant-42`, api_url: servers.ok.url });
   assert.deepEqual(r.ids, ['backend-health'], r.message);
   const line = lineFor(r, 'backend-health');
-  assert.ok(line.includes(`${servers.closed.url}/<base path>/health is not healthy (connection)`), line);
-  assert.ok(line.includes(`curl -fsS ${servers.closed.url}/<base path>/health`), line);
+  assert.ok(line.includes(`${servers.closed.url}/BASE_PATH/health is not healthy (connection)`), line);
+  assert.ok(line.includes(`curl -fsS '${servers.closed.url}/BASE_PATH/health'`), line);
   for (const secret of ['alice', 's3cret', 'tenant-42']) assert.ok(!r.message.includes(secret), `leaked ${secret}: ${r.message}`);
 });
+
+// Round-5 IN-01: the curl hint is pasted into a shell, so outside single quotes
+// it may hold no shell metacharacter (no redirect, glob, expansion or separator).
+const SHELL_META = /[<>|&;$`\\(){}[\]*?!#~"'\n\r\t]/;
+function curlHint(line) {
+  const m = /then check: (curl .*)$/.exec(line);
+  assert.ok(m, `no curl hint in: ${line}`);
+  return m[1];
+}
+function unquotedMeta(cmd) {
+  const parts = cmd.split("'");
+  assert.equal(parts.length % 2, 1, `unbalanced single quotes in: ${cmd}`);
+  const outside = parts.filter((_, i) => i % 2 === 0).join(' ');
+  const inside = parts.filter((_, i) => i % 2 === 1);
+  for (const q of inside) assert.ok(!q.includes("'"), cmd);
+  return SHELL_META.exec(outside);
+}
+
+for (const [name, backend] of [
+  ['a base path and userinfo', () => `${servers.closed.url.replace('http://', 'http://alice:s3cret@')}/tenant-42`],
+  ['no base path', () => servers.closed.url],
+  ['an IPv6 host', () => servers.closed.url.replace(/127\.0\.0\.1|localhost/, '[::1]')],
+]) {
+  test(`the curl hint for a URL with ${name} has no shell metacharacter outside quotes`, () => {
+    const r = runGate({ backend_url: backend(), api_url: servers.ok.url });
+    const cmd = curlHint(lineFor(r, 'backend-health'));
+    assert.equal(unquotedMeta(cmd), null, `unsafe to paste: ${cmd}`);
+    assert.match(cmd, /^curl -fsS '[^']+\/health'$/, cmd);
+  });
+}
 
 // --- unit: checkHealth against the fake REST ---
 

@@ -92,7 +92,7 @@ http(s)://[user[:password]@]host[:port][/path]
 
 A value that does not match blocks the gate with its `backend-url` or `api-url` check and is never probed. It is printed only as `value <redacted>`, followed by the rule for its key, so no part of it is ever echoed. For example, `http://127.0.0.1\alice:s3cret@memanto.internal:8000` and `http://u:12/x@host:8000` are rejected, because the `\` and `/` before the `@` make the host unclear.
 
-An accepted URL is printed only as `scheme://host[:port]`, with `/<base path>` in place of any base path. The user name, password and base path are never printed. The gate probes `<base path>/health` at that host only. It sends the decoded `user:password` there as a Basic `Authorization` header. Over plain `http` that header is sent unencrypted. `http://@host` has an empty user name and password: it is accepted and sends no `Authorization` header.
+An accepted URL is printed only as `scheme://host[:port]`, with `/BASE_PATH` in place of any base path. The user name, password and base path are never printed. The gate probes `<base path>/health` at that host only. It sends the decoded `user:password` there as a Basic `Authorization` header. Over plain `http` that header is sent unencrypted. `http://@host` has an empty user name and password: it is accepted and sends no `Authorization` header.
 
 ## The discuss:pre gate
 
@@ -113,8 +113,8 @@ Checks, in the order they are reported:
 | `agent-id` | `memanto.agent_id` is a non-empty string with no leading or trailing whitespace. The value is never echoed. | `gsd_run config-set memanto.agent_id <agent-id>` |
 | `backend-url` | `memanto.backend_url` is set, has no leading or trailing whitespace, and matches the strict endpoint form above. | `gsd_run config-set memanto.backend_url <http(s)://host:port>`; for a value outside the strict form, the problem `value <redacted>` and the rule `memanto.backend_url must be http(s)://[user[:password]@]host[:port][/path] using URL-safe characters; '@' is allowed only as the user:password separator (write '@' inside a password as %40)` |
 | `api-url` | `memanto.api_url` is set, has no leading or trailing whitespace, and matches the strict endpoint form above. | `gsd_run config-set memanto.api_url <http(s)://host:port>`; for a value outside the strict form, the problem `value <redacted>` and the same rule for `memanto.api_url` |
-| `backend-health` | One `GET <backend_url>/health` with a 5-second limit, no retry and no redirects. It passes only on a 2xx response whose JSON body has `"status": "ok"`. The reason is shown in parentheses, for example `(connection)` or `(http-500)`. | Bring the Memanto backend up (the capability never starts it), then check it with `curl -fsS <backend_url>/health`. The hint shows only `scheme://host[:port]`, with `/<base path>` in place of a base path. |
-| `api-health` | The same probe against `<api_url>/health`. | Bring the Memanto REST API up, then check it with `curl -fsS <api_url>/health`. |
+| `backend-health` | One `GET <backend_url>/health` with a 5-second limit, no retry and no redirects. It passes only on a 2xx response whose JSON body has `"status": "ok"`. The reason is shown in parentheses, for example `(connection)` or `(http-500)`. | Bring the Memanto backend up (the capability never starts it), then check it with `curl -fsS '<backend_url>/health'`. The hint shows only `scheme://host[:port]`, with `/BASE_PATH` in place of a base path (replace that word with the real base path), and single-quotes the URL so it is safe to paste into a shell. |
+| `api-health` | The same probe against `<api_url>/health`. | Bring the Memanto REST API up, then check it with `curl -fsS '<api_url>/health'`. |
 
 If the gate itself fails unexpectedly, it blocks with `[gate-internal]`. The gate fails closed: it does not pass on an error.
 
@@ -129,7 +129,7 @@ Example:
 
 ```
 memanto: BLOCKED [agent-id] memanto.agent_id is empty -> gsd_run config-set memanto.agent_id <agent-id>
-memanto: BLOCKED [backend-health] http://memanto-backend.example:8080/health is not healthy (connection) -> bring the Memanto backend at http://memanto-backend.example:8080 up (the capability never starts it), then check: curl -fsS http://memanto-backend.example:8080/health
+memanto: BLOCKED [backend-health] http://memanto-backend.example:8080/health is not healthy (connection) -> bring the Memanto backend at http://memanto-backend.example:8080 up (the capability never starts it), then check: curl -fsS 'http://memanto-backend.example:8080/health'
 (memanto.enabled=false disables Memanto for this project)
 ```
 
