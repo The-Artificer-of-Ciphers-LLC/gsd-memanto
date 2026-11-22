@@ -44,7 +44,7 @@ From a development checkout:
 node tools/stage-bundle.cjs --real
 ```
 
-The script stages exactly the files that `npm pack` would ship into a temporary directory and installs that directory with `capability install <dir> --yes`. Without `--real` it installs into a temporary `GSD_HOME` and leaves your real `~/.gsd` alone.
+The script stages exactly the files that `npm pack` would ship into a temporary directory and installs that directory with `capability install <dir> --yes`. It deletes the staging directory after the install. Without `--real` (or `--home <dir>`) it installs into a fresh temporary `GSD_HOME` and leaves your real `~/.gsd` alone; it prints that home on a `cleanup:` line (`cleanup` in `--json` output) so you can delete it when you are done. With `--stage-only` it installs nothing and the staged directory it prints is yours to delete.
 
 gsd-core supports these install sources:
 

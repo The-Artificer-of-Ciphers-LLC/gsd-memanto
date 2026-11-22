@@ -9,6 +9,12 @@
 //
 // Default target is a FRESH temp GSD_HOME. The owner's real home is touched
 // only with an explicit --real (which refuses --home).
+//
+// Temp directories (IN-08): after an install the staging copy is deleted, since
+// the scope directory now holds the installed bundle. What is left for the
+// caller to delete is listed in `cleanup` (--json) or on a "cleanup:" line:
+// the staged root for --stage-only, and the fresh temp GSD_HOME when no
+// --home or --real was given. --home and --real directories are never listed.
 
 const fs = require('node:fs');
 const os = require('node:os');
@@ -96,9 +102,11 @@ function gsdToolsPath() {
 function install(stagedDir, opts) {
   const env = { ...process.env, GSD_WORKSTREAM: '', GSD_PROJECT: '' };
   let home = null;
+  let freshHome = false;
   if (opts.real) {
     delete env.GSD_HOME;
   } else {
+    freshHome = !opts.home;
     home = opts.home || fs.mkdtempSync(path.join(os.tmpdir(), 'memanto-home-'));
     fs.mkdirSync(home, { recursive: true });
     env.GSD_HOME = home;
@@ -110,6 +118,9 @@ function install(stagedDir, opts) {
     encoding: 'utf8',
     env,
   });
+  // The staging copy is no longer needed once the installer has run (it copies
+  // the bundle into the scope directory), whatever the outcome.
+  fs.rmSync(path.dirname(stagedDir), { recursive: true, force: true });
   if (res.error) fail(`gsd-tools failed to start: ${res.error.message}`);
   let result;
   try {
@@ -117,23 +128,27 @@ function install(stagedDir, opts) {
   } catch {
     fail(`capability install printed non-JSON stdout (exit ${res.status}): ${res.stdout}${res.stderr}`);
   }
-  return { home: opts.real ? null : home, install: result, status: res.status, stderr: res.stderr };
+  return { home: opts.real ? null : home, freshHome, install: result, status: res.status, stderr: res.stderr };
 }
 
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   const stagedDir = stage();
   if (opts.stageOnly) {
-    process.stdout.write(opts.json ? JSON.stringify({ stagedDir }) + '\n' : stagedDir + '\n');
+    const cleanup = [path.dirname(stagedDir)];
+    if (opts.json) process.stdout.write(JSON.stringify({ stagedDir, cleanup }) + '\n');
+    else process.stdout.write(`${stagedDir}\ncleanup: rm -rf ${cleanup[0]}\n`);
     return;
   }
   const out = install(stagedDir, opts);
+  const cleanup = out.freshHome ? [out.home] : [];
   if (opts.json) {
-    process.stdout.write(JSON.stringify({ stagedDir, home: out.home, install: out.install }) + '\n');
+    process.stdout.write(JSON.stringify({ stagedDir, home: out.home, install: out.install, cleanup }) + '\n');
   } else {
-    process.stdout.write(`staged:  ${stagedDir}\n`);
+    process.stdout.write(`staged:  ${stagedDir} (deleted after install)\n`);
     process.stdout.write(`home:    ${out.home || '(real home)'}\n`);
     process.stdout.write(`status:  ${out.install && out.install.status}\n`);
+    for (const dir of cleanup) process.stdout.write(`cleanup: rm -rf ${dir}\n`);
   }
   if (!out.install || out.install.status !== 'installed') {
     process.stderr.write(out.stderr || '');
