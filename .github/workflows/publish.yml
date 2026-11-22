@@ -63,15 +63,19 @@ jobs:
       checks: read
       # Lets npm exchange this run's OIDC identity for a short-lived credential, and sign provenance.
       id-token: write
+    # The GitHub token is passed only to the steps that call GitHub (gh api, git push, gh release), never to the
+    # steps that run npm or the test suite.
     env:
-      GH_TOKEN: ${{ github.token }}
       BUMP: ${{ inputs.bump }}
       NOTES: ${{ inputs.notes }}
       DRY_RUN: ${{ inputs.dry-run }}
     steps:
+      # persist-credentials: false keeps the contents:write token out of .git/config while the tests run code
+      # fetched from npm. The commit and tag step supplies the credential for its own push only.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Refuse to release from anywhere but main
         if: github.ref != 'refs/heads/main'
@@ -84,6 +88,8 @@ jobs:
 
       - name: Require the tests to have passed on this commit
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           results="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs" --paginate \
@@ -104,10 +110,11 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
-      # Trusted publishing and staging need npm 11.15 or later.
+      # Trusted publishing and staging need npm 11.15 or later. The version is exact, so a new npm release cannot
+      # run in this job (it holds id-token: write) until someone bumps it here on purpose.
       - name: Use an npm that supports trusted publishing and staging
         run: |
-          npm install -g npm@^11.15.0
+          npm install -g npm@11.21.3
           npm --version
 
       - name: Bump the version
@@ -200,6 +207,7 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -207,7 +215,11 @@ jobs:
           git add package.json capability.json CHANGELOG.md
           git commit -m "chore(release): $VERSION"
           git tag "v$VERSION"
-          if ! git push origin HEAD:main || ! git push origin "v$VERSION"; then
+          # The checkout persisted no credential, so the push credential exists only for these two commands.
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          push() { git -c "http.extraheader=AUTHORIZATION: basic $auth" push origin "$1"; }
+          if ! push HEAD:main || ! push "v$VERSION"; then
             echo "The version is staged on npm but the commit or tag was not pushed. Reject the staged version (npm stage reject <stage-id>), then run the release again." >&2
             exit 1
           fi
@@ -221,6 +233,7 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           name="$(node -p "require('./package.json').name")"

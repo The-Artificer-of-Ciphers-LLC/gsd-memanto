@@ -64,6 +64,43 @@ test('.npmrc pins exact versions (save-exact=true)', () => {
   assert.ok(lines.includes('save-exact=true'), '.npmrc must contain save-exact=true');
 });
 
+// --- WR-04: the release job keeps the write token off disk and pins npm ---
+
+function workflowSteps(text) {
+  // Split the job into "- " step blocks (top-level steps are indented six spaces).
+  return text.split(/\n(?=      - )/).filter((b) => b.startsWith('      - '));
+}
+
+test('publish.yml checks out without persisted credentials', () => {
+  const text = read('.github/workflows/publish.yml');
+  const checkout = workflowSteps(text).find((b) => b.includes('uses: actions/checkout@'));
+  assert.ok(checkout, 'no checkout step');
+  assert.match(checkout, /persist-credentials: false/);
+});
+
+test('publish.yml hands the push credential only to the commit and tag step', () => {
+  const steps = workflowSteps(read('.github/workflows/publish.yml'));
+  const withPush = steps.filter((b) => /\bpush origin\b/.test(b));
+  assert.equal(withPush.length, 1, 'expected exactly one step that pushes');
+  assert.match(withPush[0], /name: Commit and tag the release/);
+  assert.match(withPush[0], /http\.extraheader=/);
+  const withHeader = steps.filter((b) => /extraheader/.test(b));
+  assert.equal(withHeader.length, 1, 'the auth header must appear only in the push step');
+});
+
+test('publish.yml installs an exact npm version of at least 11.15', () => {
+  const text = read('.github/workflows/publish.yml');
+  const m = /npm install -g npm@(\S+)/.exec(text);
+  assert.ok(m, 'no npm self-install');
+  assert.match(m[1], /^\d+\.\d+\.\d+$/, `npm is not pinned exactly: ${m[1]}`);
+  const [maj, min] = m[1].split('.').map(Number);
+  assert.ok(maj > 11 || (maj === 11 && min >= 15), `npm ${m[1]} is older than 11.15`);
+});
+
+test('publish.yml keeps its file name and the npm-publish environment (trusted publisher binding)', () => {
+  assert.match(read('.github/workflows/publish.yml'), /^\s+environment: npm-publish$/m);
+});
+
 test('LICENSE names The Artificer of Ciphers LLC', () => {
   assert.match(read('LICENSE'), /The Artificer of Ciphers LLC/);
 });
