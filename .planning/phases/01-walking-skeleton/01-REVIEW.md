@@ -1,174 +1,154 @@
 ---
 phase: 01-walking-skeleton
-reviewed: 2026-11-22T04:30:00Z
+reviewed: 2026-11-22T06:10:00Z
 depth: standard
 files_reviewed: 8
 files_reviewed_list:
-  - lib/install-state.cjs
   - memanto.cjs
+  - lib/install-state.cjs
+  - lib/gate-bundle.cjs
   - README.md
   - test/install-state.test.cjs
   - test/helpers/install-invariants.cjs
   - test/gate-bundle.test.cjs
   - test/loader-drift.test.cjs
-  - test/bundle.test.cjs
 findings:
   critical: 1
   warning: 3
-  info: 1
-  total: 5
+  info: 3
+  total: 7
 status: issues_found
 ---
 
-# Phase 1: Code Review Report (round 8, re-review of the round-7 classifier refactor)
+# Phase 1: Code Review Report (round 9, re-review of the round-8 doctor evidence fixes)
 
-**Reviewed:** 2026-11-22T04:30:00Z
+**Reviewed:** 2026-11-22T06:10:00Z
 **Depth:** standard
-**Files Reviewed:** 8 (`git diff 493b810^1 493b810 -- . ':!.planning'`, plus `lib/gate-bundle.cjs` read as a callee)
+**Files Reviewed:** 8 (`git diff 3157990^1 3157990 -- . ':!.planning'`; `lib/gsd-host.cjs` and the gsd-core 1.20.1 loader read as callees)
 **Status:** issues_found
 
 ## Summary
 
-This round re-reviews the round-7 refactor (`4f88076`, merged in `493b810`). `npm test` reports 464 tests: 463 pass, 1 skipped, 0 fail. Every host run used a temp `GSD_HOME` and a temp project. The only network targets were the closed local port `127.0.0.1:9`, plus `GET http://localhost:8000/health` for one run (CR-01). The necessity reference was not read this round, so no necessity findings are claimed and the `necessity:` count is left out.
+`npm test`: 488 tests, 487 pass, 1 skipped, 0 fail. Every host run used a temp `GSD_HOME` and a temp project. The only network targets were the closed port `127.0.0.1:9` and, for one run (WR-01), `GET http://localhost:8000/health`. The necessity reference was not read this round, so no necessity findings are claimed and the `necessity:` count is left out.
 
-The repro scripts are in `/private/tmp/claude-501/-Users-trekkie-projects-gsd-memanto/4f758622-4157-4863-b789-bcac255aeca3/scratchpad/r8/`:
-- `r8.cjs`, with modes `gnogate`, `twonogate` and `twoinvalid`;
-- `r8h.cjs`, which is `r8.cjs` pointed at the live `/health`;
-- `r8b.cjs`, with modes `homeplain` and `homesym`;
-- `r8c.cjs`, with modes `gcorrupt` and `gpending`;
-- `mutate.cjs`, the mutation runner over `mut/orig`, which is a `git archive HEAD` export.
+Repro scripts are in `/private/tmp/claude-501/-Users-trekkie-projects-gsd-memanto/4f758622-4157-4863-b789-bcac255aeca3/scratchpad/r9/`:
+- `r9f.cjs`: a FIFO planted at the project `capability.json` (CR-01). Pass `cur` for the working tree, or `base7` for the base.
+- `r9.cjs` / `r9h.cjs`: an edited global gate predicate or blocking flag (WR-01). `r9h.cjs` uses the live `/health`.
+- `r9p.cjs` / `r9p2.cjs`: a planted project manifest with control characters and many points (WR-02).
+- `base7/`: a `git archive 3157990^1` export, used to show what the base does.
 
-`base/` is the `493b810^1` tree, used for comparison.
+### Status of the round-8 findings
 
-### Status of the round-7 findings
-
-| Round-7 | Verdict | Evidence |
+| Round-8 | Verdict | Evidence |
 |---------|---------|----------|
-| WR-01 | Fixed | In `r7.cjs strayproj`, `gate-bundle` now names the stray directory and its fix starts with `delete <dir> by hand`. The "did not load" wording is gone. The `strayproj` and `globalplusstray` doctor tests cover this. |
-| WR-02 | Fixed | In `collide.cjs`, `loaded` and `gate-bundle` say "gsd-core loaded the global memanto copy …, but it renders no memanto hook". The fix deletes the hand-copied global directory and keeps the project bundle. `CLASH` is now `^owns ` only (`lib/install-state.cjs:70`). |
-| IN-01 | Fixed for the reported case; see WR-02 for the cases that are still open | In `r7.cjs homeproj`, `duplicate-install` is `ok` and no record says "neither". Symlink and realpath aliases are still counted as two copies. |
-| IN-02 | Fixed | A table row covers the mixed-reason fix. `classifyInstall(undefined)` and `installRecords(cls)` do not throw (`test/install-state.test.cjs:172-178`). |
+| CR-01 | Fixed | `r8.cjs gnogate`: `loaded`, `render:discuss:pre` and `gate-bundle` are errors. `twonogate` gives `global-loaded-no-gate`. `twoinvalid` gives a `gate-bundle` error (the gate runs the global bundle, gsd-core loads the project one). `discuss:pre` is hard-coded in `declaredPoints` (`memanto.cjs:191-196`). `render.gate` is required for `LOADED_STATES` (`lib/install-state.cjs:225-226`). |
+| WR-01 | Fixed | `r8c.cjs gcorrupt` gives `broken-install` with a reinstall-in-place fix. `gpending` gives `install-pending` with "finish or roll back". No record says "stray" or "delete". |
+| WR-02 | Fixed | `r8b.cjs homeplain` and `homesym` report one project-scope copy. `loaded`, `consent` and `gate-bundle` all give the `--scope project` re-consent fix. `rootsAlias` (`memanto.cjs:274-283`) matches `overlayRoots` (`capability-loader.cjs:259-290`). |
+| WR-03 | Fixed | The doctor facts come from the disk and from the test's own `render-hooks` call (`test/gate-bundle.test.cjs`, `assertDoctorConsistent`). The cross-record and re-consent rules are present (`test/helpers/install-invariants.cjs:121-149`). `scratchpad/r8/mutate8.out` shows that all 15 mutants are caught. |
+| IN-01 | Fixed | `gate-bundle` hedges whenever `!cls.loaded` (`lib/install-state.cjs:581-582`). |
 
-### The refactor itself
-
-The enum is closed. Every branch of `classifyInstall` (`lib/install-state.cjs:121-144`) assigns a member of `STATES`, and the template states (`${scope}-loaded`/`-skipped`) are all members. However, the enum does not cover all the evidence. `gatherEvidence` (`memanto.cjs:250-266`) does not collect four facts that the loader acts on:
-- a ledgered install whose manifest is unreadable;
-- the loader's alias demotion of GSD_HOME;
-- whether the discuss:pre gate itself rendered (as opposed to any hook);
-- silent skips, meaning `warnings.push` entries that never reach `blockedGates`, so render-hooks prints no "failed to load" line for them (`capability-loader.cjs:630, 642, 648, 791`; `loop-resolver.cjs:511-527`).
-
-Each of these lands in a state whose text is wrong: CR-01, WR-01 and WR-02.
-
-Results of mutating the records table (`mutate.cjs`):
-- 4 of 5 mutations are caught.
-- 2 of those are caught only by per-case `extra` assertions, not by the shared invariants.
-- 1 survives: `duplicate-install` saying "loaded neither" while `loaded` says the global copy loaded (WR-03).
+Round 8 found no new fail-open path in the classifier. `gate-bundle` ok requires all of: a `LOADED_STATES` state, which needs `render.gate`; `gateRuns` equal to the loaded directory; and no stray code. The two-copy scope inference was traced against the loader's skip order. Each misattribution found ends in a `gate-bundle` error, because the predicate never falls back to a project copy while a global `capability.json` exists. The issues below come from the new evidence gathering.
 
 ## Narrative Findings (AI reviewer)
 
 ## Critical Issues
 
-### CR-01: Doctor exits 0 with `loaded ok` and `gate-bundle ok` when the installed manifest declares no gate, so no memanto gate runs anywhere (fail-open)
+### CR-01: Regression: a FIFO planted at the project `capability.json` hangs doctor forever
 
-**File:**
-- `memanto.cjs:179-195` (`declaredPoints` trusts the on-disk manifest), `:325-330`, `:258-263`
-- `lib/install-state.cjs:137-141` (the no-render branch returns LOADED from the ledger rows), `:472`
+**File:** `memanto.cjs:191-196` (`declaredPoints`), `memanto.cjs:35-41` (`readJson`)
 
-**Issue:** `declaredPoints` takes the hook points from the manifest of the active row's scope. The shipped manifest declares one hook only, the discuss:pre gate. If the installed global `capability.json` has `gates: []`, the declared point list is empty. Doctor then renders nothing, writes no `render:*` record, and passes `render.ran = false`. The classifier's "no render evidence" branch then picks `GLOBAL_LOADED` from the ledger rows. As a result:
-- `loaded` says ok: "memanto 0.1.0 is active in global scope".
-- `gate-bundle` says ok: "the discuss:pre gate runs the installed bundle gsd-core loads".
+**Issue:** Round 8 changed `declaredPoints` so that it always reads both scope manifests with `readJson`, which is a plain `fs.readFileSync`. Before, it stopped at the first manifest it found, which was the active (global) row's. A cloned repo controls `<project>/.gsd/capabilities/memanto/capability.json`. If that file is a FIFO, `readFileSync` blocks with no writer, and doctor never returns. `gsd_run memanto doctor` is a synchronous router, so it hangs too.
 
-In fact, no memanto hook renders at discuss:pre.
+gsd-core treats exactly this as a HIGH finding (#1459 finding 2, `capability-loader.cjs:636-640`) and reads manifests through `readSmallRegularFile`. This repo's own `lib/gate-bundle.cjs:32-35` `readJsonFile` already guards with `statSync().isFile()`. `gatherEvidence` (`memanto.cjs:293`) reads the same file safely, but `declaredPoints` reads it first. An oversized planted file is read whole as well.
 
-There is a second variant (`twoinvalid`): the global manifest has `gates: []` and fails validation, next to a consented project install. gsd-core skips the global copy silently (no gate means no `blockedGates`, so no warning) and loads the project copy. That copy's gate runs the global `scripts/gate.cjs`, from a bundle that gsd-core rejected, and `gate-bundle` still says ok.
+**Reproduced:** `node r9f.cjs cur` against the working tree: doctor is killed by a 30 s timeout (`SIGKILL`, `ETIMEDOUT`). `node r9f.cjs base7` against `3157990^1`: doctor finishes in 0.7 s and reports the `consent` error.
 
-The base tree (`493b810^1`) behaves the same, so this is not a round-7 regression. It is the fail-open state this round was asked to rule out. Global bundles are not hash-bound, so a stale or edited global manifest is enough to reach it.
-
-**Reproduced:**
-- `r8h.cjs gnogate` against the live `/health`: doctor exits 0, no record has status error, and render-hooks shows no memanto hook at discuss:pre.
-- `r8.cjs twoinvalid`: `gate-bundle` is ok, while render-hooks shows that the project copy's gate rendered.
-
-**Fix:**
-- Always render the points that the doctor's own shipped manifest declares, and at least `discuss:pre`:
-  `const points = new Set([...declaredPoints(rows, scopeDirs), ...pointsOf(readJson(OWN_MANIFEST))]);`
-- Pass `render.gate` to the classifier: whether a memanto hook of kind `gate` rendered at `discuss:pre`.
-- Make `gate-bundle` ok only when `render.gate` is true.
-- When `enabled && !render.ran`, return an error: "no render evidence, so doctor cannot confirm the gate runs", not a ledger-based LOADED.
-- At `:135`, when the project copy is activated, a hook rendered and no `id collides` reason appeared, classify the state as `PROJECT_LOADED` (or `UNDETERMINED`), not `GLOBAL_LOADED`. Reason: an accepted global copy would make the activated project copy print `id collides` at its gate point.
-- Add the `gnogate` and `twoinvalid` cases as doctor tests.
+**Fix:** Read the manifests once, through the regular-file reader, and reuse them:
+```js
+// gatherEvidence already has manifests = per((s) => gateBundle.readManifest(rootOf[s]))
+function declaredPoints(manifests) {
+  const points = ['discuss:pre'];
+  pointsOf(readJson(OWN_MANIFEST), points);
+  for (const m of [manifests.global, manifests.project]) pointsOf(m, points);
+  return points;
+}
+```
+Compute `manifests` before the render loop in `collectChecks`. Also make `readJson` reject a file that is not regular, which also covers `enginesCheck` at `:166`. Add a FIFO doctor test (`mkfifo`, skipped on win32).
 
 ## Warnings
 
-### WR-01: A ledgered install whose manifest is unreadable is called "loaded", "stray or planted gate code", and "not listed by a committed ledger entry", and doctor says to delete it by hand
+### WR-01: Doctor exits 0 with `loaded`, `render:discuss:pre` and `gate-bundle` ok when the installed global gate is `exit 0` or non-blocking
 
-**File:**
-- `lib/gate-bundle.cjs:51-60` (`installed` means a committed ledger entry AND a readable manifest with id `memanto`)
-- `memanto.cjs:256`
-- `lib/install-state.cjs:110`, `:150-158` (stray), `:204-212` (`deleteFix`), `:124-127`, `:281`
+**File:** `memanto.cjs:198` (`isMemantoGate`), `memanto.cjs:213`, `lib/install-state.cjs:656`, `README.md:174`
 
-**Issue:** The evidence has no separate "ledgered" bit, so a committed install with a corrupt `capability.json` gets `installed: false`. In `gcorrupt`, the setup is a global install followed by writing `{` to the manifest. The loader skips the copy with a `warnings.push` that never reaches `blockedGates`, so it prints no reason. The state becomes `GLOBAL_NO_HOOKS`. Doctor then reports:
-- `loaded`: "gsd-core loaded the global memanto copy … printed no load error". This is false, because gsd-core skipped the copy.
-- `loaded` fix: "delete <dir> by hand (no committed global ledger entry lists it, so gsd-tools capability remove cannot remove it)". This is false too: the ledger lists the copy, and `capability list` shows it as active.
-- `gate-bundle`: calls the install "stray or planted gate code".
-- `consent`: ok, "every memanto bundle on disk is in a capability ledger".
+**Issue:** The README now says `gate-bundle` is "`ok` only when the memanto gate renders at `discuss:pre` and its predicate runs the bundle of the copy that rendered it". However:
+- `isMemantoGate` checks only `capId` and `kind`.
+- `gateRuns` comes from doctor's own copy of the selection rule, not from the rendered predicate.
+- `render-hooks` returns `check.predicate.command`, `blocking` and `onError` (observed), and doctor ignores all three.
 
-So the records contradict each other, and the delete fix leaves the ledger entry orphaned. The `_pending` case (`gpending`) gets the same delete fix for an upgrade that is still in progress. The invariant "never delete an installed bundle" cannot catch this, because it takes `installedDirs` from the same conflated bit.
+So a global manifest whose gate is `command: "exit 0"`, or `blocking: false, onError: "skip"`, still gets: `loaded` ok "its gate renders at discuss:pre", `gate-bundle` ok "the discuss:pre gate renders and runs the installed bundle", and doctor exit 0. The `exit 0` gate never blocks.
 
-**Reproduced:** `r8c.cjs gcorrupt` and `r8c.cjs gpending`. Doctor exits 1 in both.
+This sits next to the owner's host-limit decision, because global bundles are not hash-bound. It is still raised for two reasons:
+- The new README sentence is false in this case.
+- Round-8 CR-01 (`gates: []`) was the same edited-manifest class and was treated as a finding. A stale or hand-"unblocked" `blocking:false` is a non-malicious way to reach it.
 
-**Fix:**
-- Gather `ledgered: {global, project}` (committed entry only) separately from `installed`.
-- Base `deleteFix`, `stray` and the "no committed ledger entry" text on `ledgered`.
-- For a ledgered copy that is not installed: "its capability.json is unreadable or not id memanto: reinstall it in place (gsd-tools capability install … [--scope project])".
-- For a `_pending` entry: "finish or roll back the interrupted install".
-- Never describe a copy with a silent skip as "loaded". When the only evidence is "no reason and no hook", use the existing unexplained wording for the global scope too.
+It is a WARNING, not a BLOCKER: anyone who can edit the unhashed global bundle can also edit `memanto.cjs`.
 
-### WR-02: The project root at GSD_HOME is still modelled as a trusted global copy, so the fix does not cure the problem and the records contradict each other; symlink aliases are counted as two copies
+**Reproduced:** `node r9h.cjs gexit0` and `node r9h.cjs gnonblock` against the live `/health`: all three records ok, `errors:` empty, doctor exit 0. `r9.cjs gexit0` shows that `gsd-tools check predicate` on the rendered predicate returns `block:false`.
 
-**File:**
-- `lib/install-state.cjs:96` (`path.resolve`, not realpath), `:103-111`, `:246-251`, `:277-281`
-- loader `~/.claude/gsd-core/bin/lib/capability-loader.cjs:259-290`
+**Fix:** Require the rendered gate to match the shipped contract. Use constants in `memanto.cjs` (not `OWN_MANIFEST`, which is in the same editable bundle): `blocking === true`, `onError === 'halt'`, `check.predicate.kind === 'command-exit-zero'`, and a command equal to the shipped predicate string (or at least one that contains the `[gate-bundle]` selector and `scripts/gate.cjs`). Otherwise give `render:discuss:pre` an error such as "the memanto gate renders but is not the shipped blocking gate". Alternatively, reword the README to say doctor does not verify the predicate.
 
-**Issue:** When GSD_HOME is the project root (or an alias of it), gsd-core 1.20.1 demotes the global root to the consent-required `project` scope. The classifier instead assumes that the loader "scans it as the global root first". Two cases follow:
-- **`homeplain`** (the project at GSD_HOME, a plain global install, no consent). `loaded` and `gate-bundle` say "gsd-core loaded the global memanto copy …, but it renders no memanto hook and gsd-core printed no load error". Their fix is "check memanto.enabled … or reinstall it: … --yes", a global reinstall, which records no consent and does not fix this. At the same time, `consent` says "re-consent … --scope project", which is the actual cure. The invariants do not catch the disagreement.
-- **`homesym`** (GSD_HOME is a symlink to the project root). `duplicate-install` warns "installed in both global (…/r8sym-…) and project (…) scope; gsd-core keeps the global one … and skips the project one". This is one physical directory, and the loader deduplicates it. Round-7 IN-01 is therefore fixed only for paths that are textually equal.
+### WR-02: Regression: a planted project manifest now injects raw control characters into the doctor output and an unbounded number of `render-hooks` spawns, next to a legitimate global install
 
-**Reproduced:** `r8b.cjs homeplain` and `r8b.cjs homesym`. Doctor exits 1 in both.
+**File:** `memanto.cjs:191-196`, `memanto.cjs:208-218` (`renderCheck`: `id = render:${point}` and the `:214`/`:217` messages are not passed through `clean`)
+
+**Issue:** `declaredPoints` now adds every `point` string from the untrusted, unconsented project manifest, even when a global copy is installed and loaded. Round 7 read only the active global manifest in that case. Each point becomes one `gsd-tools loop render-hooks <point>` spawn (about 170 ms each, so 40 points take 7.5 s, and there is no cap). Each point also becomes a record whose `id` is the raw point. `renderText` prints that `id` unescaped, so ESC/BEL sequences (terminal title, colour, OSC 8 links) reach the user's terminal. The `:211` message cleans the point, but the `id` does not.
+
+**Reproduced:** `node r9p2.cjs 3 base7`: 1 render record and 0 raw ESC bytes. `node r9p2.cjs 3` (working tree): 5 render records and 2 raw ESC bytes, with `id` set to `render:\u001b]0;PWNED\u0007\u001b[31mRED`. `node r9p.cjs 40`: 42 render records in 7.5 s.
 
 **Fix:**
-- Compare paths with `fs.realpathSync` (and treat a realpath failure as an alias, as the loader does).
-- In the same-directory case, model the single copy as project scope, which needs consent. Then `PROJECT_INACTIVE` and `consentFix` apply, and `loaded`/`gate-bundle` give the same re-consent fix as `consent`.
-- Add the drift-test check that `overlayRoots` still demotes the global root on an alias.
+- Take installed-manifest points only from a copy that is ledgered (`ledgerState !== 'none'`), or only from the loop points gsd-core defines (`loop-host-contract.cjs`). Drop anything else.
+- Cap the point count.
+- Build the `id` as `render:${clean(point, 64)}`, and clean every message that interpolates the point.
 
-### WR-03: The invariants are fed facts that come from the classifier itself, and a cross-record contradiction about which copy loaded survives mutation
+### WR-03: In the no-gate states, `duplicate-install` tells the user to remove the project copy first, which leaves the gate-less copy and is not marked as a load error
 
-**File:**
-- `test/install-state.test.cjs:156-161` (`stray`, `installedDirs` and `loaded` are read from `cls`)
-- `test/gate-bundle.test.cjs:387-395` (the doctor-level facts have no `loaded`, and each test picks `stray` by hand)
-- `test/helpers/install-invariants.cjs:57-63`
+**File:** `lib/install-state.cjs:571-572`, `:277-286` (`NO_GATE_STATES` is not in `LOAD_ERROR_STATES`)
 
-**Issue:** In the table test, `facts.loaded = Boolean(cls.loaded)`, so the invariant "nothing claims a load when no copy loaded" checks the classifier against itself. It could not catch WR-01's false "loaded" claim. In the doctor tests, `loaded` is never passed, so that invariant never runs there.
+**Issue:** In `global-loaded-no-gate` (`r8.cjs twonogate`), the global copy holds the id and declares no gate. The consented project copy is the only one with the gate. `duplicate-install` gives the fix "remove one copy: gsd-tools capability remove memanto --scope project (or --scope global)". That fix does not start with "fix the load error first", and its first-named action removes the ledgered, healthy project install while the gate stays off. `loaded` and `gate-bundle` correctly name the global copy as the one to reinstall, so the records point at different copies. The mirror case, `project-loaded-no-gate`, gets the same generic text.
 
-No invariant checks that `loaded`, `duplicate-install` and `gate-bundle` name the same loaded copy, or that `consent` and `loaded` give compatible fixes. The mutation runner confirms this. With mutation `MD`, `duplicate-install` says "gsd-core loaded neither of them" for `GLOBAL_NO_HOOKS`, while `loaded` and `gate-bundle` say the global copy loaded, and all 72 tests still pass. `MH` (consent ok for an unledgered copy) and `MI` (loaded fix not re-consent) are caught only by per-case `extra` assertions.
+**Reproduced:** `r8.cjs twonogate`, `duplicate-install` record.
 
-**Fix:**
-- Derive facts from the host, not from `cls`: run render-hooks, and use the `scope` of `_overlay`-free evidence such as the marker from `ledgeredGlobalSkipped`, or the `id collides` warning.
-- Add a cross-record invariant: extract the "loaded copy" claimed by each record (a "loaded the <scope>" or "loads the <scope>" phrase, "neither", "keeps the global one") and assert that they agree.
-- Add a consent/loaded fix-compatibility rule: if `consent` says re-consent, the `loaded` fix must too.
-- Keep `MD` as a regression test.
+**Fix:** Add `GLOBAL_NO_GATE` and `PROJECT_NO_GATE` to the "fix the load error first" set. In those states, name the loaded gate-less copy (`cls.loaded.scope`) as the one to reinstall or remove, for example: `fix the load error first (see loaded); then remove the ${other} copy only after the ${loaded} copy renders the gate`. Add a shared invariant: in a no-gate state, no fix removes a copy other than `cls.loaded`.
 
 ## Info
 
-### IN-01: With no render evidence, `gate-bundle` states "gsd-core loads memanto from <dir>" without hedging
+### IN-01: The README promises a `loaded` warn when memanto is disabled, but doctor never emits `loaded` then
 
-**File:** `lib/install-state.cjs:137-139`, `:438`
+**File:** `README.md:170`, `memanto.cjs:395`, `lib/install-state.cjs:515`
 
-**Issue:** When `capability list` fails and no render runs (`gpending`), the classifier gives `GLOBAL_LOADED` from the loader's precedence alone. `gate-bundle` then states "gsd-core loads memanto from <dir>", although gsd-core defers a `_pending` entry. `loaded` hedges in this case ("by the loader's precedence", `:345`), but doctor does not print `loaded` when the list fails.
+**Issue:** `checks.push(recs.loaded)` runs only when `located.ok && enabled`. So the README sentence "`warn`: … or memanto is disabled so nothing was rendered" never applies, and the `DISABLED` branch of `loadedRecord` is reachable only from the table tests.
 
-**Fix:** When `!cls.render.ran`, use the same hedge in `gate-bundle` ("by the loader's precedence gsd-core would load …"), or report the state as undetermined.
+**Fix:** Drop the clause from the README, or emit `loaded` as a warn when disabled.
+
+### IN-02: `ledgerState` treats any `_pending` key as pending; the loader requires a truthy `_pending`
+
+**File:** `lib/gate-bundle.cjs:83`; loader `capability-loader.cjs:358`
+
+**Issue:** With `_pending: null` or `false`, the loader treats the entry as neither pending nor committed. For a global copy it still loads it, but doctor's text says "its ledger entry is _pending … so gsd-core does not load it". The verdict still fails closed, because `gateRuns` is null. Only the wording is wrong.
+
+**Fix:** Use `e._pending` truthiness for `'pending'`. A present but falsy `_pending` should be `'none'`, or a separate "malformed" state.
+
+### IN-03: The fixes for the no-gate states point at things doctor already ruled out
+
+**File:** `lib/install-state.cjs:366`, `memanto.cjs:218`
+
+**Issue:** For the "declares none" case, the fix says "check that gsd-core reads memanto.enabled as true". Doctor only renders when enabled is true, so this check is already done. `render:discuss:pre` says "fix the reported load error" when no load error was reported (`gnogate`).
+
+**Fix:** When `!declaresGate`, give only the reinstall-in-place command. Use `renderFix` wording that does not mention a load error when `reason` is null.
 
 ---
 
-_Reviewed: 2026-11-22T04:30:00Z_
+_Reviewed: 2026-11-22T06:10:00Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
