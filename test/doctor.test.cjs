@@ -260,7 +260,7 @@ test('default discuss mode: discuss-bypass warns naming --power and --assumption
   assert.ok(r, res.stdout);
   assert.equal(r.status, 'warn', JSON.stringify(r));
   assert.ok(r.message.includes('--power') && r.message.includes('--assumptions'), r.message);
-  for (const id of ['gsd-core-located', 'enabled', 'loaded', 'consent', 'engines', 'render:discuss:pre', 'duplicate-install']) {
+  for (const id of ['gsd-core-located', 'enabled', 'loaded', 'consent', 'engines', 'render:discuss:pre', 'duplicate-install', 'gate-bundle']) {
     assert.equal(rec(rep, id) && rec(rep, id).status, 'ok', `${id}: ${JSON.stringify(rec(rep, id))}`);
   }
 });

@@ -128,6 +128,7 @@ const REQUIRED = [
   'lib/checks.cjs',
   'lib/health.cjs',
   'lib/gsd-host.cjs',
+  'lib/gate-bundle.cjs',
 ];
 
 test('npm pack --dry-run lists only whitelisted paths and every required file', () => {

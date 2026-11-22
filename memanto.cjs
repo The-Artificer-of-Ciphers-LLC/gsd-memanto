@@ -12,6 +12,7 @@ const { spawnSync } = require('node:child_process');
 const { resolveConfig } = require('./lib/config.cjs');
 const { cap } = require('./lib/health.cjs');
 const host = require('./lib/gsd-host.cjs');
+const gateBundle = require('./lib/gate-bundle.cjs');
 
 const USAGE = 'Usage: gsd_run memanto doctor [--raw]';
 const DIRECT_FORM = 'node "${GSD_HOME:-$HOME}/.gsd/capabilities/memanto/memanto.cjs" doctor';
@@ -230,6 +231,44 @@ function duplicateCheck(scopeDirs) {
   );
 }
 
+// CR-01: the discuss:pre predicate runs scripts/gate.cjs only from an installed
+// bundle (lib/gate-bundle.cjs). Error when that differs from the bundle
+// gsd-core loaded, when no installed bundle exists while one is loaded, or when
+// a scope directory holds gate code that is not an installed bundle (stray or
+// planted). rows is null when capability list could not be read.
+function gateBundleCheck(rows, scopeDirs, roots) {
+  const active = rows ? rows.find((r) => r.status === 'active') : null;
+  const loaded = active ? scopeDirs[active.scope] : null;
+  const resolved = gateBundle.resolveGateBundle(roots);
+  if (loaded && resolved && path.resolve(resolved) !== path.resolve(loaded)) {
+    return record(
+      'gate-bundle',
+      'error',
+      clean(`the discuss:pre gate would run ${resolved}/scripts/gate.cjs, but gsd-core loaded the bundle at ${loaded}`, REASON_MAX),
+      `remove one copy so a single installed bundle remains: gsd-tools capability remove memanto --scope ${active.scope === 'global' ? 'project' : 'global'}`,
+    );
+  }
+  if (loaded && !resolved) {
+    return record(
+      'gate-bundle',
+      'error',
+      clean(`gsd-core loaded memanto from ${loaded}, but the discuss:pre gate finds no installed bundle (capability.json plus a committed ledger entry) and blocks every run`, REASON_MAX),
+      reinstallFix(),
+    );
+  }
+  for (const [scope, dir] of Object.entries(scopeDirs)) {
+    if (!dir || !isFile(path.join(dir, 'scripts', 'gate.cjs'))) continue;
+    if (gateBundle.isInstalledBundle(roots[scope === 'global' ? 'gsdHome' : 'projectRoot'])) continue;
+    return record(
+      'gate-bundle',
+      'error',
+      clean(`${dir} holds scripts/gate.cjs but is not an installed memanto bundle (no capability.json with id memanto or no committed ${scope} ledger entry); stray or planted gate code`, REASON_MAX),
+      `delete ${dir} (the gate never runs it), then ${reinstallFix()}`,
+    );
+  }
+  return record('gate-bundle', 'ok', 'the discuss:pre gate runs the installed bundle gsd-core loads', '');
+}
+
 // F11 / Pitfall 2: these discuss paths never render discuss:pre.
 function discussBypassCheck(cfg) {
   const mode = cfg.ok ? cfg.get('workflow.discuss_mode') : undefined;
@@ -259,8 +298,10 @@ function collectChecks(cwd) {
     global: path.join(gsdHome, '.gsd', 'capabilities', 'memanto'),
     project: path.join(cwd, '.gsd', 'capabilities', 'memanto'),
   };
+  const roots = { gsdHome, projectRoot: cwd };
   const cfg = resolveConfig({ cwd, env });
   const checks = [];
+  let rows = null;
 
   const located = host.locateGsdTools({
     env,
@@ -277,7 +318,7 @@ function collectChecks(cwd) {
     if (!list.ok) {
       checks.push(record('capability-list', 'error', clean(`capability list failed: ${list.reason}`, REASON_MAX), 'run gsd-tools capability list to see the host error'));
     } else {
-      const rows = list.rows.filter((r) => r && r.id === 'memanto');
+      rows = list.rows.filter((r) => r && r.id === 'memanto');
       if (enabled) checks.push(loadedCheck(rows));
       checks.push(consentCheck(rows, scopeDirs));
       checks.push(enginesCheck(rows, scopeDirs, located.version));
@@ -287,6 +328,7 @@ function collectChecks(cwd) {
     }
   }
   checks.push(duplicateCheck(scopeDirs));
+  checks.push(gateBundleCheck(rows, scopeDirs, roots));
   checks.push(discussBypassCheck(cfg));
   if (enabled) checks.push(...gateChecks(cwd));
   return checks;

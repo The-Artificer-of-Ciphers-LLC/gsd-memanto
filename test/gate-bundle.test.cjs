@@ -1,0 +1,167 @@
+'use strict';
+// CR-01: the discuss:pre predicate runs only the gate.cjs of a real installed
+// memanto bundle (capability.json with id memanto AND a committed ledger entry
+// for its scope). gsd-core keeps the global copy when both scopes hold one, so
+// the predicate prefers global only when the global copy is a real installed
+// bundle. A stray or planted global scripts/gate.cjs is never run, and with no
+// trustworthy bundle the predicate exits non-zero (fail closed). Doctor reports
+// the state as a gate-bundle error. Every case uses a temp GSD_HOME.
+
+const { test, before, after } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const env = require('./helpers/gsd-env.cjs');
+const { startFakeApi } = require('./helpers/fake-api.cjs');
+
+const PHASE_DIR = '.planning/phases/01-test';
+const MANIFEST = JSON.parse(fs.readFileSync(path.join(env.REPO_ROOT, 'capability.json'), 'utf8'));
+const PREDICATE = MANIFEST.gates.find((g) => g.point === 'discuss:pre').check.predicate;
+const servers = {};
+
+before(async () => {
+  servers.ok = await startFakeApi({ mode: 'ok' });
+});
+
+after(async () => {
+  for (const s of Object.values(servers)) await s.close();
+  env.cleanup();
+});
+
+function globalBundle(h) {
+  return path.join(h, '.gsd', 'capabilities', 'memanto');
+}
+
+function projectInstall(project, h) {
+  const res = spawnSync(
+    process.execPath,
+    [path.join(env.REPO_ROOT, 'tools', 'stage-bundle.cjs'), '--scope', 'project', '--project', project, '--home', h, '--json'],
+    { cwd: env.REPO_ROOT, encoding: 'utf8', env: { ...process.env, GSD_WORKSTREAM: '', GSD_PROJECT: '' } },
+  );
+  assert.equal(res.status, 0, `${res.stdout}${res.stderr}`);
+  assert.equal(JSON.parse(res.stdout).install.status, 'installed', res.stdout);
+  return path.join(project, '.gsd', 'capabilities', 'memanto');
+}
+
+// A global directory that is not an installed bundle: only scripts/gate.cjs.
+function plantGlobalGate(h, { withManifest = false } = {}) {
+  const dir = globalBundle(h);
+  fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'scripts', 'gate.cjs'), 'process.exit(0);\n');
+  if (withManifest) fs.writeFileSync(path.join(dir, 'capability.json'), JSON.stringify(MANIFEST));
+  return dir;
+}
+
+function renderedPredicate(project, h) {
+  const hooks = env.memantoHooks(env.renderHooks('discuss:pre', { cwd: project, home: h }));
+  assert.equal(hooks.length, 1, 'expected exactly one memanto gate at discuss:pre');
+  return hooks[0].check.predicate;
+}
+
+function runGate(project, h, predicate) {
+  const res = env.checkPredicate(predicate || renderedPredicate(project, h), {
+    cwd: project,
+    home: h,
+    phaseDir: PHASE_DIR,
+    phaseNumber: '01',
+  });
+  assert.equal(res.status, 0, `check predicate CLI should exit 0, stderr: ${res.stderr}`);
+  return res.json;
+}
+
+function doctor(project, h, bundle) {
+  const res = spawnSync(process.execPath, [path.join(bundle, 'memanto.cjs'), 'doctor', '--raw'], {
+    cwd: project,
+    encoding: 'utf8',
+    env: { ...process.env, GSD_HOME: h, GSD_WORKSTREAM: '', GSD_PROJECT: '' },
+  });
+  if (res.error) throw res.error;
+  let rep;
+  try {
+    rep = JSON.parse(res.stdout);
+  } catch {
+    throw new Error(`doctor --raw stdout is not JSON (exit ${res.status}): ${res.stdout}\nstderr: ${res.stderr}`);
+  }
+  return { status: res.status, rep, check: (id) => rep.checks.find((c) => c.id === id) };
+}
+
+function emptyAgentProject() {
+  return env.makeProject({
+    config: { memanto: { enabled: true, agent_id: '', backend_url: servers.ok.url, api_url: servers.ok.url } },
+    phaseDirs: ['01-test'],
+  });
+}
+
+test('the predicate stays POSIX sh within the host 4096-character limit', () => {
+  assert.equal(PREDICATE.kind, 'command-exit-zero');
+  assert.ok(PREDICATE.command.length <= 4096, `command length ${PREDICATE.command.length}`);
+  const res = spawnSync('sh', ['-n', '-c', PREDICATE.command], { encoding: 'utf8' });
+  assert.equal(res.status, 0, res.stderr);
+});
+
+test('verifier scenario: project install, empty agent_id, planted global gate.cjs exiting 0 still blocks', () => {
+  const h = env.tmpDir('memanto-home-');
+  const project = emptyAgentProject();
+  projectInstall(project, h);
+  plantGlobalGate(h);
+  const verdict = runGate(project, h);
+  assert.equal(verdict.block, true, `planted global gate.cjs was run: ${JSON.stringify(verdict)}`);
+  assert.match(verdict.message, /BLOCKED \[agent-id\]/, verdict.message);
+});
+
+test('verifier scenario: doctor reports gate-bundle as an error naming the stray global gate', () => {
+  const h = env.tmpDir('memanto-home-');
+  const project = emptyAgentProject();
+  const bundle = projectInstall(project, h);
+  const stray = plantGlobalGate(h);
+  const d = doctor(project, h, bundle);
+  assert.equal(d.status, 1, JSON.stringify(d.rep));
+  const r = d.check('gate-bundle');
+  assert.ok(r, JSON.stringify(d.rep));
+  assert.equal(r.status, 'error', JSON.stringify(r));
+  assert.ok(r.message.includes(stray), r.message);
+  assert.ok(r.fix.length > 0, 'gate-bundle has no fix hint');
+});
+
+test('a planted global capability.json without a ledger entry is not selected either', () => {
+  const h = env.tmpDir('memanto-home-');
+  const project = emptyAgentProject();
+  const bundle = projectInstall(project, h);
+  plantGlobalGate(h, { withManifest: true });
+  assert.equal(runGate(project, h).block, true);
+  assert.equal(doctor(project, h, bundle).check('gate-bundle').status, 'error');
+});
+
+test('a project-scope install with healthy config passes, so the project gate is the one that runs', () => {
+  const h = env.tmpDir('memanto-home-');
+  const project = env.makeProject({
+    config: { memanto: { enabled: true, agent_id: 'bundle-agent', backend_url: servers.ok.url, api_url: servers.ok.url } },
+    phaseDirs: ['01-test'],
+  });
+  const bundle = projectInstall(project, h);
+  const verdict = runGate(project, h);
+  assert.equal(verdict.block, false, verdict.message);
+  const r = doctor(project, h, bundle).check('gate-bundle');
+  assert.equal(r && r.status, 'ok', JSON.stringify(r));
+});
+
+test('with no installed bundle in either scope the predicate blocks with [gate-bundle]', () => {
+  const h = env.tmpDir('memanto-home-');
+  const project = emptyAgentProject();
+  plantGlobalGate(h);
+  const verdict = runGate(project, h, PREDICATE);
+  assert.equal(verdict.block, true, JSON.stringify(verdict));
+  assert.match(verdict.message, /memanto: BLOCKED \[gate-bundle\]/, verdict.message);
+  assert.match(verdict.message, /memanto\.enabled=false disables Memanto/, verdict.message);
+});
+
+test('a global install is still preferred over a project install, as gsd-core does', () => {
+  const h = env.tmpDir('memanto-home-');
+  const project = emptyAgentProject();
+  env.installBundle({ home: h });
+  const bundle = projectInstall(project, h);
+  // Make the two copies distinguishable: the project gate would pass.
+  fs.writeFileSync(path.join(bundle, 'scripts', 'gate.cjs'), 'process.exit(0);\n');
+  assert.equal(runGate(project, h, PREDICATE).block, true, 'the project gate ran instead of the global one');
+});
