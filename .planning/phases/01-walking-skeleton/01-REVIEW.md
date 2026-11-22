@@ -2,190 +2,134 @@
 phase: 01-walking-skeleton
 reviewed: 2026-11-21T00:00:00Z
 depth: standard
-files_reviewed: 33
+files_reviewed: 20
 files_reviewed_list:
   - .github/workflows/ci.yml
   - .github/workflows/publish.yml
-  - .gitignore
-  - .npmrc
+  - README.md
   - capability.json
   - lib/checks.cjs
   - lib/config.cjs
+  - lib/gate-bundle.cjs
   - lib/gsd-host.cjs
   - lib/health.cjs
   - memanto.cjs
   - package.json
-  - scripts/check-probe.cjs
-  - scripts/gate.cjs
-  - test/activation.test.cjs
   - test/bundle.test.cjs
-  - test/config-contract.test.cjs
   - test/config.test.cjs
-  - test/dispatch.test.cjs
   - test/doctor.test.cjs
-  - test/gate.test.cjs
+  - test/gate-bundle.test.cjs
+  - test/gsd-host.test.cjs
   - test/health.test.cjs
-  - test/helpers/fake-api.cjs
-  - test/helpers/fake-memanto.cjs
-  - test/helpers/gsd-env.cjs
-  - test/install.test.cjs
-  - test/manifest.test.cjs
   - test/release.test.cjs
-  - test/skeleton.test.cjs
-  - test/spike-installer.test.cjs
-  - test/spike-regression.test.cjs
-  - test/traps.test.cjs
-  - tools/run-tests.cjs
+  - test/stage-bundle.test.cjs
   - tools/stage-bundle.cjs
 findings:
   critical: 2
-  warning: 4
-  info: 8
-  total: 14
-  necessity: 1
+  warning: 3
+  info: 4
+  total: 9
+  necessity: 0
 status: issues_found
 ---
 
-# Phase 1: Code Review Report
+# Phase 1: Code Review Report (re-review after fixes)
 
 **Reviewed:** 2026-11-21T00:00:00Z
 **Depth:** standard
-**Files Reviewed:** 33
+**Files Reviewed:** 20 (the fix range `a04d2df..HEAD`)
 **Status:** issues_found
 
 ## Summary
 
-The review covered the capability manifest, the gate and doctor code paths (`lib/*.cjs`, `scripts/*.cjs`, `memanto.cjs`), the dev tooling, both GitHub workflows and the test helpers. `npm test` passes (188 tests, 187 pass, 1 skipped, 0 fail). The agent also ran scratch probes against a temporary `GSD_HOME` and never touched the real `~/.gsd`. Those probes reproduced two blocking defects:
+This is a re-review of the 14 fixes in `01-REVIEW-FIX.md`. `npm test` passes: 234 tests, 233 pass, 1 skipped, 0 fail. Every scratch reproduction used a temp `GSD_HOME` and a temp project, and the only network traffic went to closed local ports. The real `~/.gsd` was never touched.
 
-1. The discuss:pre gate predicate does not run the bundle that gsd-core loaded and consented. It runs whichever `scripts/gate.cjs` exists under `$GSD_HOME/.gsd/capabilities/memanto`. In the reproduction, a stray file there made a project-scope install pass its gate with an empty `agent_id`, so the gate failed open.
-2. `redactUrl` leaks endpoint credentials when the configured URL does not parse. The most likely reason for a URL not to parse is a password containing unescaped reserved characters, so the leak hits exactly the common mistake.
+### Status of the prior findings
 
-The warnings cover doctor host spawns that have no timeout (doctor can hang), doctor running project-planted code as an "identity check", a misleading fix hint for an invalid `GSD_PROJECT`/`GSD_WORKSTREAM`, and release-job credential exposure.
-
-The gate never calls the `memanto` CLI. Its only network request is `GET <base>/health`. Both properties were confirmed in `lib/checks.cjs:120-145` and `lib/health.cjs:95-128`.
+| Prior | Verdict | Notes |
+|-------|---------|-------|
+| CR-01 | **Partially fixed, regression introduced** | The original scenario (a stray global `scripts/gate.cjs` next to a project install) now blocks. A real global install is still selected: the agent reproduced `[agent-id]` from the global gate. With neither scope installed the gate still blocks with `[gate-bundle]`. The new fall-through to the project scope, however, runs unconsented repo-planted code. See CR-01 below. The orchestrator's observation is confirmed: the block message prints the literal `${GSD_HOME:-$HOME}` (WR-01). |
+| CR-02 | **Fixed for the reported shapes, residual leak** | `http://user:p/ss@host:8000` and `http://user:p#w@host` are now redacted. A password that begins with a port-like run of digits still parses as a valid URL and leaks through the health messages. See CR-02 below. |
+| WR-01 | Fixed | Every host spawn is bounded and `ETIMEDOUT` is mapped. Tests use a stub that never exits. |
+| WR-02 | Fixed | Project-local candidates are gone, `GSD_CORE_DIR` is terminal, and the runtime homes match the shim. |
+| WR-03 | Fixed | `kind: 'env'` exists, and both the gate and doctor name the variable. |
+| WR-04 | Fixed as specified, residual vector | `persist-credentials: false`, a step-scoped `GH_TOKEN` and an exact npm pin are all in place. Test-time code can still capture the token through `.git` (WR-02 below). |
+| IN-01 to IN-07 | Fixed | IN-07 (necessity) was resolved by removing the duplicate check. `run-tests.cjs` remains the single floor, and a test pins it. |
+| IN-08 | Fixed, minor residual | See IN-02 below. |
 
 ## Narrative Findings (AI reviewer)
 
 ## Critical Issues
 
-### CR-01: The gate runs a `gate.cjs` taken from the global directory, not from the consented bundle. Project scope fails open.
+### CR-01: The gate falls through to a repo-planted project bundle when the global bundle has no ledger entry (unconsented code runs, gate fails open)
 
-**File:** `capability.json:63`
-**Issue:** The predicate command `d="${GSD_HOME:-$HOME}/.gsd/capabilities/memanto"; [ -f "$d/scripts/gate.cjs" ] || d=".gsd/capabilities/memanto"; exec node "$d/scripts/gate.cjs"` picks the global directory whenever a `scripts/gate.cjs` file exists there. It does not check that this directory is the bundle gsd-core actually loaded, the one bound to the ledger and the consent hash. Possible sources of that file:
-- a hand-copied bundle
-- a leftover directory
-- an older version of the capability
-- any planted file
+**File:** `capability.json:63` (`const r=[h,"."].find(ok)`), mirrored in `lib/gate-bundle.cjs:41-46`
+**Issue:** gsd-core loads gates from a global bundle that has **no** ledger entry. A bundle merely dropped on disk "provides declarative surfaces" (`~/.claude/gsd-core/bin/lib/capability-loader.cjs:889-896`). Only command dispatch needs a committed entry. The new predicate rejects that global copy because it has no committed ledger entry, then tries `"."`. The project ledger and bundle are repo-plantable (gsd-core says so itself at `capability-loader.cjs:893-894`). The predicate checks no consent record, and its ledger test (`id === "memanto"`, no `_pending`) is weaker than gsd-core's `isValidLedgerEntry`.
 
-**Reproduced (temp `GSD_HOME`):**
-1. `memanto` was installed at project scope with `memanto.agent_id: ""`.
-2. A file `$GSD_HOME/.gsd/capabilities/memanto/scripts/gate.cjs` was written containing `process.exit(0)`.
-3. `loop render-hooks discuss:pre` rendered the project gate.
-4. `check predicate` returned `{"block":false,"message":"command exited 0"}`, where a block was expected.
+**Reproduced** with a temp `GSD_HOME`:
+1. The real bundle files were copied into `$GSD_HOME/.gsd/capabilities/memanto` with no ledger.
+2. A project was set up with `agent_id: ""`, a planted `.gsd-capabilities.json` (`{"entries":{"memanto":{"id":"memanto"}}}`), a copied `capability.json`, and a `scripts/gate.cjs` that writes a marker file and exits 0.
+3. `loop render-hooks discuss:pre` rendered one memanto gate. `check predicate` returned `{"block":false,"message":"command exited 0"}`, and the marker file existed.
 
-This defeats the core "fail closed" value. The code that decides the verdict is not covered by the consent hash of the bundle that rendered the gate. No test plants a global gate next to a project install. `test/gate.test.cjs` installs globally only.
-**Fix:** The selected directory must be the one gsd-core loaded, and the selection must fail closed when it is ambiguous. The host offers no bundle-path placeholder (only `${PHASE_*}`), so one option is to resolve inside node instead of in sh:
-
-```sh
-exec node -e 'const p=require("path"),fs=require("fs");const g=p.join(process.env.GSD_HOME||require("os").homedir(),".gsd/capabilities/memanto"),l=".gsd/capabilities/memanto";const c=[g,l].filter(d=>fs.existsSync(p.join(d,"capability.json")));if(c.length===0){console.error("memanto: BLOCKED [gate-internal] no installed bundle");process.exit(1)}require(p.resolve(c[0],"scripts/gate.cjs"))'
-```
-
-Then add a self-check in `scripts/gate.cjs`. The check blocks when its own bundle directory is not the committed ledger entry for the scope it represents. It also blocks when both scope directories exist and their `scripts/gate.cjs` and `lib/` contents differ. Add a regression test: project install plus a planted global `scripts/gate.cjs` must still block.
-
-### CR-02: `redactUrl` leaks userinfo for unparseable URLs whose password holds `/`, `?` or `#`
-
-**File:** `lib/health.cjs:48` (used by `lib/checks.cjs:106`)
-**Issue:** When `new URL()` fails, the fallback regex `^([A-Za-z][A-Za-z0-9+.-]*:\/\/)?[^/?#@\s]*@` only strips userinfo that contains none of `/ ? # @`. A password with an unescaped `/` or `#` is the typical reason a URL is invalid. Those values reach the `invalid-url` branch, and the gate then prints them verbatim in `memanto.<key> is not an http(s) URL: ...`. Reproduced:
-- `redactUrl('http://user:p/ss@host:8000')` returned `http://user:p/ss@host:8000`
-- `redactUrl('http://user:p#w@host')` returned `http://user:p#w@host`
-
-The gate stderr goes into the agent transcript and the host message. `test/gate.test.cjs:152-163` asserts that no userinfo leaks, but only with parseable URLs.
-**Fix:** For a value that does not parse, strip everything from just after `://` up to the last `@` before any whitespace, or redact the whole value:
-
+The pre-fix predicate ran the global copy, which gsd-core loaded, so this scenario used to block. The fix therefore turned a fail-open into arbitrary execution of code from the repository, the exact thing project-scope consent exists to stop. No test covers "global present but unledgered, project planted". `test/gate-bundle.test.cjs:127-134` covers only the reverse case.
+**Fix:** Follow gsd-core's own selection and fail closed when the choice is ambiguous. If the global directory holds a `capability.json` and has no pending entry, gsd-core's gate came from global. In that case run global only when it is installed, and block otherwise. Never fall through to the project:
 ```js
-s = s.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)?[^\s]*@/, '$1'); // greedy to the LAST '@'
+const gm=p.join(h,b,"capability.json");
+const r = f.existsSync(gm) ? (ok(h) ? h : null) : (ok(".") ? "." : null);
 ```
+The project branch is then reached only when the global directory has no manifest. In that case the rendered gate can only have come from the consented project bundle. Apply the same rule in `resolveGateBundle`. Add the reproduction above as a regression test that must return `block:true` and must not create the marker file.
 
-If that is still too loose, print only the scheme and host (`<scheme>://<redacted>`) for invalid URLs. Add the two strings above to `test/health.test.cjs`.
+### CR-02: Credential leak remains for passwords that start with port-like digits followed by `/`, `?` or `#`
+
+**File:** `lib/health.cjs:47-64`, `lib/checks.cjs:120-138`
+**Issue:** `http://u:12/x@host:8000` (user `u`, password `12/x`) is a VALID URL with host `u`, port `12` and path `/x@host:8000`. `validateEndpointUrl` accepts it. The `CREDENTIAL_SCHEMES` branch of `redactUrl` sees no userinfo and returns it unchanged (verified: `redactUrl("http://u:12/x@host:8000")` returns the input). The gate then probes `u:12` and prints `http://u:12/x@host:8000/health is not healthy (connection)` and the same string in the `curl` fix hint (`checks.cjs:132-137`). The whole password reaches the transcript. `http://user:123#w@host` leaks `123` in the same way after `displayBase` drops the hash. The CR-02 fix note claims "no part of the userinfo survives". That holds only for values that do not parse.
+**Fix:** Do not reconstruct display URLs from a value that may be mis-parsed. If the raw configured value contains `@` after `scheme://`, display `<scheme>://<redacted>` and name the config key instead. Alternatively, have the health messages print only `memanto.<key>` and never the URL. Add both strings above to `test/health.test.cjs` and to the host-gate output test.
 
 ## Warnings
 
-### WR-01: Doctor host spawns have no timeout, so doctor can hang despite PROBE_TIMEOUT_MS
+### WR-01: The `[gate-bundle]` block message prints the literal `${GSD_HOME:-$HOME}` and a weaker reinstall hint
 
-**File:** `lib/gsd-host.cjs:22-28`
-**Issue:** `runTools` calls `spawnSync` without `timeout`. It serves `runtime-identity`, `capability list` and `loop render-hooks`. The owner fix in `memanto.cjs:63-80` bounds only the check probe, and its stated reason is a config file that blocks on read (a FIFO). The host commands read the same `.planning/config.json` and run before the probe (`memanto.cjs:265-286`). A blocking config, or a hung host, therefore hangs `memanto doctor` forever before the bounded probe is reached.
-**Fix:** Pass `timeout` (for example 15000 ms) and `killSignal` to `spawnSync` in `runTools`. Map `res.error.code === 'ETIMEDOUT'` to a `{ ok:false, reason:'timed out' }` result in `hostIdentity`, `capabilityList` and `renderHooksAt`. Add a test that uses a fake `gsd-tools.cjs` that never exits.
+**File:** `capability.json:63`
+**Issue:** The text sits inside a single-quoted `node -e` program, so sh never expands it. gsd-core interpolates only `${PHASE_NUMBER|PHASE_DIR|PHASE_REQ_IDS}` (`gate-predicate-evaluator.cjs:45`). The agent reproduced the host message `... in ${GSD_HOME:-$HOME} or this project -> reinstall: gsd-tools capability install npm:@taoc/gsd-memanto --yes`. The user cannot tell which home was checked, and that matters most when `GSD_HOME` is set. The hint also differs from `reinstallFix()` (`memanto.cjs:57-62`). It does not pin a version and does not mention `--scope project`, so following it in a project-scope setup installs globally.
+**Fix:** Print the resolved `h`, sanitized with the same control-character replacement as the `[gate-internal]` branch, for example `" in "+JSON.stringify(h).slice(0,150)+" or "+process.cwd()`. Use the same `--scope project` wording as `reinstallFix()`. Assert in `test/gate-bundle.test.cjs:149-157` that the message contains the temp home path and does not contain `${GSD_HOME`.
 
-### WR-02: The doctor "identity check" executes a project-planted `gsd-tools.cjs`, and the GSD_CORE_DIR comment is wrong
+### WR-02: Release push credential is still reachable by code that ran during `npm test` (git hooks and the `origin` URL)
 
-**File:** `lib/gsd-host.cjs:60-79, 81-93`
-**Issue:** To verify identity, `hostIdentity` runs the candidate file with `process.execPath`. Running the file is the attack, so the identity check gives no protection against a cloned repo that plants `<project>/gsd-core/bin/gsd-tools.cjs`. The candidate list omits every runtime home except `~/.claude` and opencode (no `~/.codex`, `~/.gemini/...`, `~/.cursor`, and so on). When a user of those runtimes runs the direct form (`node .../memanto.cjs doctor`), the project-local file is reached and executed.
+**File:** `.github/workflows/publish.yml:203-222`
+**Issue:** The Test step (`:183-188`) runs gsd-core fetched from npm and the repo's own tests, which can write anywhere in the workspace. That includes `.git/hooks/pre-commit` and `pre-push`, and `remote.origin.url` in `.git/config`. The commit-and-tag step then runs `git commit` and `push origin` with `GH_TOKEN` in the step environment, which hooks inherit. The basic-auth header goes to whatever host `origin` names. This defeats the purpose of `persist-credentials: false`, the reason WR-04 was raised.
+**Fix:** In that step, run git with `-c core.hooksPath=/dev/null`. Pass `--no-verify` to `commit` and `push`. Push to an explicit URL instead of `origin`: `git -c core.hooksPath=/dev/null -c "http.extraheader=..." push "https://github.com/${GITHUB_REPOSITORY}.git" "$1"`. Add a `test/release.test.cjs` assertion for both.
 
-The comment at line 60 says GSD_CORE_DIR "wins outright". The loop actually falls through to later candidates when that file fails identity.
-**Fix:** Do not execute project-local candidates. Either drop them, or require an explicit opt-in such as `GSD_CORE_DIR`. Add the other runtime config homes that the gsd-core shim searches. Make an identity failure of `GSD_CORE_DIR` terminal, or correct the comment.
+### WR-03: The doctor `gate-bundle` mismatch fix tells the user to remove the wrong copy
 
-### WR-03: An invalid GSD_PROJECT/GSD_WORKSTREAM produces a "make GSD_PROJECT readable" fix
-
-**File:** `lib/config.cjs:105`, `lib/checks.cjs:47-56`
-**Issue:** `resolveConfig` reports an invalid planning name as `{ kind: 'read', path: e.variable }`. `configUnreadable` then renders `GSD_PROJECT cannot be read (...) -> make GSD_PROJECT readable` (reproduced). The gate blocks correctly, but the fix hint points at a non-existent file. The `doctor` `enabled` record (`memanto.cjs:98`) repeats the same misdirection.
-**Fix:** Return a distinct `kind: 'env'`, and render `${variable} is invalid (...) -> unset ${variable} or set it to a name without '/', '\\' or '..'`.
-
-### WR-04: The release job leaves a write-scoped token on disk during tests and installs a floating npm
-
-**File:** `.github/workflows/publish.yml:72-74, 108-111, 176-183`
-**Issue:** `actions/checkout` runs with the default `persist-credentials: true`, so the `contents: write` GITHUB_TOKEN sits in `.git/config` while `npm test` runs code from gsd-core fetched from npm and the repo's own tests. `npm install -g npm@^11.15.0` takes whatever 11.x is latest at run time, in a job that also holds `id-token: write`. A compromised gsd-core release or npm 11.x could push to `main` or tags.
-**Fix:** Set `persist-credentials: false` on checkout. In the commit/tag step only, push with `git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64)" push ...`. Pin npm to an exact version (`npm@11.15.0`).
+**File:** `memanto.cjs:276-282`
+**Issue:** The hint always says to remove the scope that gsd-core did NOT load. Take the case of a hand-copied global bundle (loaded by gsd-core, not in the ledger) next to a legitimate project install. Doctor then says `gsd-tools capability remove memanto --scope project`. That deletes the consented install and keeps the copy that has no ledger entry. `capability remove --scope global` cannot clean up an unledgered directory either.
+**Fix:** Name the specific bad copy. If the loaded scope is not `isInstalledBundle`, tell the user to delete that directory by hand and then reinstall. Only when both copies are installed should the hint use `capability remove --scope <other>`. Add a doctor test for the hand-copied-global case.
 
 ## Info
 
-### IN-01: `package.json` `files` lists a directory that does not exist
+### IN-01: Probe `fix` strings bypass `clean()`
 
-**File:** `package.json:13`
-**Issue:** `"fragments"` does not exist in the repo. npm ignores it silently today. If someone later creates `fragments/` for another purpose, it will ship and change the bundle hash.
-**Fix:** Remove the entry until Phase 2 adds fragments.
+**File:** `memanto.cjs:75-87`
+**Issue:** `probeRecord` sanitizes `id` and `message` but copies `fix` verbatim. That is the one field IN-06 meant to normalize, and it is printed by `renderText`.
+**Fix:** `const fix = typeof c.fix === 'string' ? clean(c.fix, REASON_MAX) : '';`
 
-### IN-02: The `DRY_RUN` env variable is never read
+### IN-02: `stage-bundle` still leaks temp directories on its failure paths
 
-**File:** `.github/workflows/publish.yml:70`
-**Issue:** Every step gates on `inputs.dry-run` directly, so `DRY_RUN` is dead configuration.
-**Fix:** Remove the variable, or use it consistently.
+**File:** `tools/stage-bundle.cjs:77-94, 110, 124-130`
+**Issue:** A `fail()` inside `stage()` (symlink or non-regular file) exits after `mkdtemp` and leaves `memanto-stage-*` behind. If `install()` fails with `res.error` or non-JSON output, it exits before `cleanup` is printed, so a fresh `memanto-home-*` is left without being named.
+**Fix:** Remove the staging root before calling `fail` in `stage()`. Print or remove the fresh home on the failure paths of `install()`.
 
-### IN-03: Doctor's control-character filter omits U+2028/U+2029
+### IN-03: The "global preferred" test cannot tell the global gate from a `[gate-bundle]` block
 
-**File:** `memanto.cjs:23`
-**Issue:** `CONTROL` is `/[\x00-\x1f\x7f-\x9f]/g`. `lib/health.cjs:12` and `lib/checks.cjs:40` also neutralise `\p{Zl}\p{Zp}`. As a result, host reasons and paths echoed by doctor (`memanto.cjs:117,123,215`) can still carry line separators.
-**Fix:** Reuse one shared regex (export it from `lib/health.cjs`).
+**File:** `test/gate-bundle.test.cjs:159-167`
+**Issue:** The test asserts only `block === true`. A regression that rejected both scopes would also pass. The agent confirmed separately that the global gate runs (`[agent-id]`), but the test does not pin that.
+**Fix:** Add `assert.match(verdict.message, /BLOCKED \[agent-id\]/)`.
 
-### IN-04: `enginesCheck` falls back to `capability.json` in the process cwd
+### IN-04: The predicate duplicates `lib/gate-bundle.cjs` by hand, and `locateGsdTools` keeps a dead parameter
 
-**File:** `memanto.cjs:169`
-**Issue:** `path.join(scopeDirs[bad.scope] || '', 'capability.json')` reads a relative `capability.json` when the row's scope is neither global nor project. The engines range printed then comes from an unrelated manifest.
-**Fix:** If the scope is unknown, skip the read and print `(unknown range)`.
-
-### IN-05: Endpoint URLs are trimmed silently while `agent_id` whitespace blocks
-
-**File:** `lib/health.cjs:22-30`, `lib/checks.cjs:91-93`
-**Issue:** `" http://host:8000 "` passes, but `" dev-agent "` blocks. The rules are inconsistent and the trim is undocumented.
-**Fix:** Apply one rule to both (preferably reject surrounding whitespace in both).
-
-### IN-06: Doctor trusts probe records without validating them, and `renderText` runs outside the try
-
-**File:** `memanto.cjs:87, 298, 311-317`
-**Issue:** `gateChecks` copies `c.status` as is. A status outside `ok|warn|error` does not count as an error, so doctor exits 0. A non-string status makes `c.status.padEnd` throw after the try/catch, and the host then reports "router threw".
-**Fix:** Coerce unknown statuses to `error` in `gateChecks`, and move rendering inside the guarded block.
-
-### IN-07: Already defended elsewhere: CI repeats the "more than one test" assertion
-
-**File:** `.github/workflows/ci.yml:50-53`, `.github/workflows/publish.yml:183`
-**Category:** necessity
-**Issue:** `npm test` already runs `tools/run-tests.cjs:38-41`, which exits 1 when one test or fewer ran. The awk steps re-check the same TAP line after that exit code has already failed the step (`set -o pipefail`).
-**Fix:** Keep only one of the two checks, or record that the duplication is a deliberate belt-and-braces check.
-
-### IN-08: `tools/stage-bundle.cjs` leaves temp directories behind
-
-**File:** `tools/stage-bundle.cjs:73, 102`
-**Issue:** Every non-test invocation creates `memanto-stage-*` and `memanto-home-*` under the OS temp directory and never removes them. The test harness cleans up only the directories it registers.
-**Fix:** Print the paths and document that they need cleanup, or add a `--cleanup` flag or an exit handler for `--stage-only`.
+**File:** `capability.json:63`, `lib/gate-bundle.cjs:1-6`, `lib/gsd-host.cjs:123-124`
+**Issue:** Two copies of the selection rule are kept in step only by a comment. The CR-01 fix must change both. Nothing checks mechanically that the inline rule and the module agree outside the scenario tests. `locateGsdTools` documents `projectRoot` as "accepted ... and deliberately unused" while `memanto.cjs` still passes it.
+**Fix:** Add a table-driven test that runs `resolveGateBundle` and the inline predicate over the same fixture matrix. Drop the unused argument at the call site.
 
 ---
 
