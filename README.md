@@ -77,9 +77,22 @@ gsd-tools config-set memanto.enabled true
 
 The three string keys follow one whitespace rule: a value that is only whitespace counts as empty, and a value with leading or trailing whitespace blocks the gate. The gate never trims a value silently.
 
-The gate resolves these keys the same way `gsd-tools config-get` does. A `GSD_PROJECT` or `GSD_WORKSTREAM` scoped `config.json` is read first, then `.planning/config.json`, then the manifest default. A URL may carry `user:password@`. The gate sends it as a Basic `Authorization` header and never prints it. Over plain `http` that header is sent unencrypted. The separator between the password and the host must be a literal `@`; do not percent-encode it. A literal `@` inside the user name or password must be written `%40` (and `/`, `?`, `#` as `%2F`, `%3F`, `%23`). When the authority (the text between `://` and the first `/`, `\`, `?` or `#`) holds a `:` and an `@` (or `%40`) follows it, the URL blocks the gate with its `backend-url` or `api-url` check (`has an ambiguous '@' in URL`) and is never probed, because its host is unclear: `http://u:12/x@host:8000` parses as host `u`, port `12`, path `/x@host:8000`, so the password `12/x` would go to host `u`. When the authority holds no `:`, an `@` after it cannot end a password, so `http://host/a@b` and `http://host/?x=a@b` are accepted. `http://@host` has an empty user name and password: it is accepted and sends no `Authorization` header.
+The gate resolves these keys the same way `gsd-tools config-get` does. A `GSD_PROJECT` or `GSD_WORKSTREAM` scoped `config.json` is read first, then `.planning/config.json`, then the manifest default. An endpoint URL is accepted only when it matches one strict form, checked on the raw value:
 
-The gate and doctor echo an endpoint only when it is a cleanly parsed `http` or `https` URL. A URL with `user:password@` is printed as `scheme://host:port/path`, with no user name, password, query or fragment. Any other value is printed as `<scheme>://<redacted>` (or `<redacted>` when it has no scheme), so its authority is never echoed. That covers a mistyped separator such as `%40` or a full-width `＠`: `http://alice:s3cret%40memanto.internal:8000` is printed as `http://<redacted>`.
+```
+http(s)://[user[:password]@]host[:port][/path]
+```
+
+- The scheme is `http` or `https`, in lower case.
+- The user name and password use only URL-safe characters (letters, digits and `-._~!$&'()*+,;=`) and `%XX` escapes. Write `@` inside a password as `%40`, and `:`, `/`, `?`, `#` as `%3A`, `%2F`, `%3F`, `%23`.
+- `@` appears at most once, and only as the `user:password` separator. An `@` in the base path, query or fragment is not supported, encoded (`%40`) or not.
+- The host is a name or IPv4 address (letters, digits, `.` and `-`) or a bracketed IPv6 address. The port is 1 to 5 digits, at most 65535.
+- The base path uses URL-safe characters and valid `%XX` escapes. A query (`?`), a fragment (`#`), a backslash, whitespace, control characters and non-ASCII characters (such as a full-width `＠`) are rejected anywhere.
+- Node's URL parser must read the same scheme, host and port from the value. A host it rewrites, such as `0x7f.1`, is rejected.
+
+A value that does not match blocks the gate with its `backend-url` or `api-url` check and is never probed. It is printed only as `memanto.<key>=<redacted>`, so no part of it is ever echoed. For example, `http://127.0.0.1\alice:s3cret@memanto.internal:8000` and `http://u:12/x@host:8000` are rejected, because the `\` and `/` before the `@` make the host unclear.
+
+An accepted URL is printed only as `scheme://host[:port]`, with `/<base path>` in place of any base path. The user name, password and base path are never printed. The gate probes `<base path>/health` at that host only. It sends the decoded `user:password` there as a Basic `Authorization` header. Over plain `http` that header is sent unencrypted. `http://@host` has an empty user name and password: it is accepted and sends no `Authorization` header.
 
 ## The discuss:pre gate
 
@@ -98,9 +111,9 @@ Checks, in the order they are reported:
 | `config-unreadable` | The project config file exists but cannot be read or is not valid JSON, or `GSD_PROJECT` / `GSD_WORKSTREAM` holds an invalid name (a `/`, `\` or `..`). | Fix the JSON syntax in the named file, or make it readable. For an invalid variable: unset it or set it to a name without `/`, `\` or `..`. |
 | `mempalace` | `mempalace.enabled` is the boolean `true`. Memanto and the first-party MemPalace capability are mutually exclusive, so one project cannot enable both. | `gsd_run config-set mempalace.enabled false` (or `gsd_run config-set memanto.enabled false`) |
 | `agent-id` | `memanto.agent_id` is a non-empty string with no leading or trailing whitespace. The value is never echoed. | `gsd_run config-set memanto.agent_id <agent-id>` |
-| `backend-url` | `memanto.backend_url` is set, has no leading or trailing whitespace, is an `http` or `https` URL, and has no ambiguous `@` (an `@` after an authority that holds a `:`, see above). | `gsd_run config-set memanto.backend_url <http(s)://host:port>`; for an ambiguous `@`, `<http(s)://[user:password@]host:port>` with a literal `@` before the host and `%40` inside the password |
-| `api-url` | `memanto.api_url` is set, has no leading or trailing whitespace, is an `http` or `https` URL, and has no ambiguous `@` (an `@` after an authority that holds a `:`, see above). | `gsd_run config-set memanto.api_url <http(s)://host:port>`; for an ambiguous `@`, `<http(s)://[user:password@]host:port>` with a literal `@` before the host and `%40` inside the password |
-| `backend-health` | One `GET <backend_url>/health` with a 5-second limit, no retry and no redirects. It passes only on a 2xx response whose JSON body has `"status": "ok"`. The reason is shown in parentheses, for example `(connection)` or `(http-500)`. | Bring the Memanto backend up (the capability never starts it), then check it with `curl -fsS <backend_url>/health`. |
+| `backend-url` | `memanto.backend_url` is set, has no leading or trailing whitespace, and matches the strict endpoint form above. | `gsd_run config-set memanto.backend_url <http(s)://host:port>`; for a value outside the strict form, `<http(s)://[user[:password]@]host[:port][/path]>` |
+| `api-url` | `memanto.api_url` is set, has no leading or trailing whitespace, and matches the strict endpoint form above. | `gsd_run config-set memanto.api_url <http(s)://host:port>`; for a value outside the strict form, `<http(s)://[user[:password]@]host[:port][/path]>` |
+| `backend-health` | One `GET <backend_url>/health` with a 5-second limit, no retry and no redirects. It passes only on a 2xx response whose JSON body has `"status": "ok"`. The reason is shown in parentheses, for example `(connection)` or `(http-500)`. | Bring the Memanto backend up (the capability never starts it), then check it with `curl -fsS <backend_url>/health`. The hint shows only `scheme://host[:port]`, with `/<base path>` in place of a base path. |
 | `api-health` | The same probe against `<api_url>/health`. | Bring the Memanto REST API up, then check it with `curl -fsS <api_url>/health`. |
 
 If the gate itself fails unexpectedly, it blocks with `[gate-internal]`. The gate fails closed: it does not pass on an error.
