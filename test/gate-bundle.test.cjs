@@ -242,6 +242,24 @@ test('doctor: a hand-copied global bundle next to a project install names the gl
   assert.ok(dup.fix.includes(`delete ${stray} by hand`), dup.fix);
 });
 
+// Round-4 IN-01: the "skipped as colliding" claim needs the host's collision
+// warning. With memanto disabled doctor renders no hooks, so it never sees how
+// gsd-core handled the project copy and must not claim a collision.
+test('doctor: gate-bundle claims the project copy collided only when gsd-core reported the collision', () => {
+  const h = env.tmpDir('memanto-home-');
+  const project = env.makeProject({
+    config: { memanto: { enabled: false, agent_id: '', backend_url: servers.ok.url, api_url: servers.ok.url } },
+    phaseDirs: ['01-test'],
+  });
+  const bundle = projectInstall(project, h);
+  const stray = handCopyGlobal(h);
+  const r = doctor(project, h, bundle).check('gate-bundle');
+  assert.equal(r && r.status, 'error', JSON.stringify(r));
+  assert.ok(r.message.includes(`gsd-core loads memanto from ${stray}`), r.message);
+  assert.ok(!r.message.includes('as colliding'), `collision claimed without the host's warning: ${r.message}`);
+  assert.ok(r.message.includes('gsd-core scans the global copy first'), r.message);
+});
+
 test('doctor: a global install that gsd-core skips (outside engines.gsd) next to a project install names the project copy as loaded', () => {
   const h = env.tmpDir('memanto-home-');
   const project = emptyAgentProject();

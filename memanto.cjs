@@ -400,10 +400,14 @@ function gateBundleCheck(loaded, scopeDirs, roots, failures = null) {
     const strayScope = gateBundle.hasManifest(roots.gsdHome) ? 'global' : 'project';
     const strayDir = scopeDirs[strayScope];
     const then = installed[otherScope(strayScope)] ? keep(otherScope(strayScope)) : `, then ${reinstallFix()}`;
-    const collides =
-      loaded.scope === 'global' && gateBundle.hasManifest(roots.projectRoot)
+    // Round-4 IN-01: claim the collision only when gsd-core reported it;
+    // otherwise state only what is known.
+    let collides = '';
+    if (loaded.scope === 'global' && gateBundle.hasManifest(roots.projectRoot)) {
+      collides = (failures || []).some((r) => COLLIDES.test(r))
         ? ' (a global capability.json exists, so gsd-core skips the project copy with the same id as colliding)'
-        : '';
+        : ' (a global capability.json exists, and gsd-core scans the global copy first)';
+    }
     return record(
       'gate-bundle',
       'error',
