@@ -367,6 +367,15 @@ const CASES = [
     assert.equal(r.gateBundle.fix, r.unreadable.fix);
     for (const k of ['loaded', 'gateBundle', 'unreadable']) assert.ok(!/\bdelete\b/.test(r[k].fix), `${k}: ${r[k].fix}`);
   }],
+  // Round-10 mutation follow-up: a loaded copy with no shipped gate and an
+  // unreadable ledger repairs the ledger first; a reinstall alone would read it.
+  ['global gate does not match this release and the global ledger is a FIFO', { g: true, gLed: 'unreadable', rows: null, hook: true, gate: false, mismatch: 'command', unread: [{ scope: G, kind: 'ledger', cause: 'nonregular', what: 'a FIFO' }] }, STATES.GLOBAL_NO_GATE, G, (r) => {
+    for (const k of ['loaded', 'gateBundle']) {
+      assert.equal(r[k].status, 'error', JSON.stringify(r[k]));
+      assert.ok(r[k].fix.startsWith('remove /h/.gsd-capabilities.json (it is a FIFO, not a real global capability ledger'), `${k}: ${r[k].fix}`);
+      assert.ok(!/\bdelete\b/.test(r[k].fix), `${k}: ${r[k].fix}`);
+    }
+  }],
   ['global install whose global ledger has no read permission (r10h ledgereacces)', { g: true, gLed: 'unreadable', rows: null, hook: true, unread: [{ scope: G, kind: 'ledger', cause: 'permission', what: 'EACCES: permission denied' }] }, STATES.GLOBAL_LOADED, G, (r) => {
     assert.ok(r.gateBundle.message.includes('cannot read the global capability ledger /h/.gsd-capabilities.json'), r.gateBundle.message);
     assert.ok(r.gateBundle.fix.startsWith('restore read permission on /h/.gsd-capabilities.json: chmod u+rw /h/.gsd-capabilities.json'), r.gateBundle.fix);
