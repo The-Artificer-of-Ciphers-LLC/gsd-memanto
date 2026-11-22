@@ -104,9 +104,57 @@ for (const [label, call] of [
   });
 }
 
-test('with no gsd-core in any config home, the project-local candidates are still searched', () => {
+// --- WR-02: doctor never executes a project-planted gsd-tools.cjs ---
+
+// A stub that records that it was executed, so "not run" is observable.
+function plantRecordingStub(root, marker) {
+  const file = plantStub(root, 'planted');
+  fs.writeFileSync(
+    file,
+    `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran');\n` +
+      `process.stdout.write(JSON.stringify({ packageName: '@opengsd/gsd-core', version: 'planted' }) + '\\n');\n`,
+  );
+  return file;
+}
+
+test('a project-planted gsd-tools.cjs is never executed or located, even with no gsd-core anywhere else', () => {
   const { home, project } = dirs();
-  plantStub(path.join(project, '.claude'), 'project-claude');
+  const markers = [path.join(home, 'ran-root'), path.join(home, 'ran-claude')];
+  plantRecordingStub(project, markers[0]);
+  plantRecordingStub(path.join(project, '.claude'), markers[1]);
   const located = locate({ home, project });
-  assert.equal(located.version, 'project-claude', JSON.stringify(located));
+  assert.equal(located.ok, false, JSON.stringify(located));
+  for (const m of markers) assert.equal(fs.existsSync(m), false, `planted stub ran: ${m}`);
+  for (const t of located.tried) assert.ok(!t.path.startsWith(project), `project candidate tried: ${t.path}`);
 });
+
+test('GSD_CORE_DIR wins outright: when it fails identity no other candidate is tried', () => {
+  const { home, project } = dirs();
+  const core = env.tmpDir('memanto-host-core-');
+  plantStub(path.join(home, '.claude'), 'home-claude');
+  const located = locate({ home, project, extraEnv: { GSD_CORE_DIR: path.join(core, 'gsd-core') } });
+  assert.equal(located.ok, false, JSON.stringify(located));
+  assert.deepEqual(
+    located.tried.map((t) => t.path),
+    [path.join(core, 'gsd-core', 'bin', 'gsd-tools.cjs')],
+    JSON.stringify(located),
+  );
+});
+
+for (const [label, rel, extraEnv] of [
+  ['~/.codex', ['.codex'], {}],
+  ['CODEX_HOME', ['custom-codex'], { CODEX_HOME: 'custom-codex' }],
+  ['~/.gemini/antigravity', ['.gemini', 'antigravity'], {}],
+  ['~/.cursor', ['.cursor'], {}],
+  ['~/.copilot', ['.copilot'], {}],
+]) {
+  test(`with GSD_CORE_DIR unset, a gsd-core under the ${label} runtime home is located`, () => {
+    const { home, project } = dirs();
+    const resolvedEnv = {};
+    for (const [k, v] of Object.entries(extraEnv)) resolvedEnv[k] = path.join(home, v);
+    plantStub(path.join(home, ...rel), `runtime-${label}`);
+    const located = locate({ home, project, extraEnv: resolvedEnv });
+    assert.equal(located.ok, true, JSON.stringify(located));
+    assert.equal(located.version, `runtime-${label}`, JSON.stringify(located));
+  });
+}

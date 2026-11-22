@@ -143,7 +143,7 @@ It reports the gate's own checks (agent id, MemPalace, URLs, health) and these d
 
 | Check id | Not-ok status | Meaning when not ok |
 |----------|---------------|---------------------|
-| `gsd-core-located` | `error` | No gsd-core `gsd-tools.cjs` was found. Set `GSD_CORE_DIR` to the gsd-core directory that holds `bin/gsd-tools.cjs`. |
+| `gsd-core-located` | `error` | No gsd-core `gsd-tools.cjs` was found. Set `GSD_CORE_DIR` to the gsd-core directory that holds `bin/gsd-tools.cjs`. When `GSD_CORE_DIR` is set it is the only place doctor looks. Otherwise doctor uses the `gsd-tools` that is running it, then the runtime config homes (`~/.claude/gsd-core` first, then the other runtimes gsd-core supports). Doctor never runs a `gsd-core` inside the project, because identifying it would mean executing code from the repository. |
 | `enabled` | `warn` | `memanto.enabled` is not `true` (or the config could not be read), so no Memanto hook runs in this project. Doctor still runs, because gsd-core routes the command family whether or not the capability is enabled. |
 | `loaded` | `error` | `memanto.enabled` is `true`, but gsd-core did not load the capability (fails open). |
 | `consent` | `error` | A project-scope install has no consent record (for example its bytes changed after consent), or a bundle on disk is in no capability ledger (copied by hand). |
