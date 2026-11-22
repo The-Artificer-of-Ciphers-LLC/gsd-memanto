@@ -77,7 +77,7 @@ gsd-tools config-set memanto.enabled true
 
 The three string keys follow one whitespace rule: a value that is only whitespace counts as empty, and a value with leading or trailing whitespace blocks the gate. The gate never trims a value silently.
 
-The gate resolves these keys the same way `gsd-tools config-get` does. A `GSD_PROJECT` or `GSD_WORKSTREAM` scoped `config.json` is read first, then `.planning/config.json`, then the manifest default. A URL may carry `user:password@`. The gate sends it as a Basic `Authorization` header and never prints it. Over plain `http` that header is sent unencrypted.
+The gate resolves these keys the same way `gsd-tools config-get` does. A `GSD_PROJECT` or `GSD_WORKSTREAM` scoped `config.json` is read first, then `.planning/config.json`, then the manifest default. A URL may carry `user:password@`. The gate sends it as a Basic `Authorization` header and never prints it. Over plain `http` that header is sent unencrypted. Percent-encode `/`, `?`, `#` and `@` inside the user name or password (`%2F`, `%3F`, `%23`, `%40`). A URL with any other `@` blocks the gate with its `backend-url` or `api-url` check and is never probed, because its host is ambiguous: `http://u:12/x@host:8000` parses as host `u`, port `12`, path `/x@host:8000`. Such a URL is printed only as `http://<redacted>`, so no part of the password reaches the transcript.
 
 ## The discuss:pre gate
 
@@ -96,14 +96,19 @@ Checks, in the order they are reported:
 | `config-unreadable` | The project config file exists but cannot be read or is not valid JSON, or `GSD_PROJECT` / `GSD_WORKSTREAM` holds an invalid name (a `/`, `\` or `..`). | Fix the JSON syntax in the named file, or make it readable. For an invalid variable: unset it or set it to a name without `/`, `\` or `..`. |
 | `mempalace` | `mempalace.enabled` is the boolean `true`. Memanto and the first-party MemPalace capability are mutually exclusive, so one project cannot enable both. | `gsd_run config-set mempalace.enabled false` (or `gsd_run config-set memanto.enabled false`) |
 | `agent-id` | `memanto.agent_id` is a non-empty string with no leading or trailing whitespace. The value is never echoed. | `gsd_run config-set memanto.agent_id <agent-id>` |
-| `backend-url` | `memanto.backend_url` is set, has no leading or trailing whitespace, and is an `http` or `https` URL. | `gsd_run config-set memanto.backend_url <http(s)://host:port>` |
-| `api-url` | `memanto.api_url` is set, has no leading or trailing whitespace, and is an `http` or `https` URL. | `gsd_run config-set memanto.api_url <http(s)://host:port>` |
+| `backend-url` | `memanto.backend_url` is set, has no leading or trailing whitespace, is an `http` or `https` URL, and has no `@` outside a well-formed `user:password@` (see above). | `gsd_run config-set memanto.backend_url <http(s)://host:port>` |
+| `api-url` | `memanto.api_url` is set, has no leading or trailing whitespace, is an `http` or `https` URL, and has no `@` outside a well-formed `user:password@` (see above). | `gsd_run config-set memanto.api_url <http(s)://host:port>` |
 | `backend-health` | One `GET <backend_url>/health` with a 5-second limit, no retry and no redirects. It passes only on a 2xx response whose JSON body has `"status": "ok"`. The reason is shown in parentheses, for example `(connection)` or `(http-500)`. | Bring the Memanto backend up (the capability never starts it), then check it with `curl -fsS <backend_url>/health`. |
 | `api-health` | The same probe against `<api_url>/health`. | Bring the Memanto REST API up, then check it with `curl -fsS <api_url>/health`. |
 
 If the gate itself fails unexpectedly, it blocks with `[gate-internal]`. The gate fails closed: it does not pass on an error.
 
-The gate runs `scripts/gate.cjs` only from an installed bundle. An installed bundle is a `.gsd/capabilities/memanto` directory whose `capability.json` has the id `memanto` and whose scope ledger (`.gsd-capabilities.json` in `${GSD_HOME:-$HOME}` or in the project root) holds a committed `memanto` entry. gsd-core keeps the global copy when both scopes have one, so the gate tries the global bundle first and then the project bundle. A directory that only holds a stray or planted `scripts/gate.cjs` is never run. If neither scope holds an installed bundle, the gate blocks with `[gate-bundle]`.
+The gate runs `scripts/gate.cjs` only from an installed bundle. An installed bundle is a `.gsd/capabilities/memanto` directory whose `capability.json` has the id `memanto` and whose scope ledger (`.gsd-capabilities.json` in `${GSD_HOME:-$HOME}` or in the project root) holds a committed `memanto` entry. The gate picks the bundle the same way gsd-core does:
+
+- If `${GSD_HOME:-$HOME}/.gsd/capabilities/memanto/capability.json` exists, gsd-core loads that global copy, even when no ledger lists it. The gate then runs the global bundle when it is installed and blocks with `[gate-bundle]` when it is not. It never falls back to a project copy in this case, because a project ledger and bundle can be committed to the repository.
+- If no global `capability.json` exists, the gate runs the project bundle when it is installed and blocks with `[gate-bundle]` when it is not. gsd-core activates a project bundle only when this machine holds a consent record for it.
+
+A directory that only holds a stray or planted `scripts/gate.cjs` is never run. A `[gate-bundle]` line names the expanded directories it checked (the global one under the resolved `GSD_HOME`, or your home directory when `GSD_HOME` is unset, and the project one) and the version-pinned reinstall command, `gsd-tools capability install npm:@taoc/gsd-memanto@<version> --yes`, with `--scope project` for a project-scope install.
 
 Example:
 
@@ -152,7 +157,7 @@ It reports the gate's own checks (agent id, MemPalace, URLs, health) and these d
 | `engines` | `error` | The installed gsd-core version is outside the manifest's `engines.gsd` range (fails open). |
 | `render:<point>` | `error` | No memanto hook renders at a declared loop point, for example `render:discuss:pre`. The host's load-failure reason is shown when it gives one. |
 | `duplicate-install` | `warn` | memanto is installed in both global and project scope; gsd-core keeps the global one. |
-| `gate-bundle` | `error` | The `discuss:pre` gate would run a bundle other than the one gsd-core loaded, finds no installed bundle at all, or a scope directory holds a `scripts/gate.cjs` that is not part of an installed bundle (stray or planted code). |
+| `gate-bundle` | `error` | The `discuss:pre` gate would run a bundle other than the one gsd-core loaded, finds no installed bundle at all, or a scope directory holds a `scripts/gate.cjs` that is not part of an installed bundle (stray or planted code). The fix names the stray copy: a directory that no ledger lists is deleted by hand, because `gsd-tools capability remove` only removes ledgered installs. The fix never tells you to remove an installed bundle. |
 | `discuss-bypass` | `warn` | Always reported: `/gsd-discuss-phase --power` and `--assumptions` (and `workflow.discuss_mode: "assumptions"`) skip the `discuss:pre` gate. |
 
 Doctor reports `check-probe`, `capability-list` or `doctor-internal` as an `error` only when doctor itself fails internally.

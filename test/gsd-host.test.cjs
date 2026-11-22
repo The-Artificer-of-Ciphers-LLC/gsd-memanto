@@ -32,11 +32,21 @@ function plantStub(root, origin) {
 function locate({ home, project, extraEnv = {} }) {
   const childEnv = { PATH: process.env.PATH, HOME: home, ...extraEnv };
   const script = `const h = require(${JSON.stringify(HOST_LIB)});
-process.stdout.write(JSON.stringify(h.locateGsdTools({ env: process.env, projectRoot: ${JSON.stringify(project)} })));`;
+process.stdout.write(JSON.stringify(h.locateGsdTools({ env: process.env })));`;
+  // cwd is the project, so a project-local gsd-core would be found if it were a candidate.
   const res = spawnSync(process.execPath, ['-e', script], { cwd: project, env: childEnv, encoding: 'utf8' });
   assert.equal(res.status, 0, `${res.stdout}${res.stderr}`);
   return JSON.parse(res.stdout);
 }
+
+// Round-2 IN-04: locateGsdTools takes no project root, and no caller passes one.
+test('no caller passes the removed projectRoot argument to locateGsdTools', () => {
+  for (const rel of ['memanto.cjs', 'lib/gsd-host.cjs']) {
+    const text = fs.readFileSync(path.join(env.REPO_ROOT, rel), 'utf8');
+    for (const call of text.matchAll(/locateGsdTools\(\{[^)]*\}\)/g)) assert.ok(!call[0].includes('projectRoot'), `${rel}: ${call[0]}`);
+  }
+  assert.ok(!/projectRoot/.test(fs.readFileSync(HOST_LIB, 'utf8')), 'lib/gsd-host.cjs still mentions projectRoot');
+});
 
 function dirs() {
   return { home: env.tmpDir('memanto-host-home-'), project: env.tmpDir('memanto-host-proj-') };
