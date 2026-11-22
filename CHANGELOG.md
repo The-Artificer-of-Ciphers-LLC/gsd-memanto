@@ -4,6 +4,8 @@ All notable changes to `@taoc/gsd-memanto` are listed here.
 
 ## Unreleased
 
+## 0.1.1 - 2026-11-22
+
 ### Security
 
 - **The gate runs only the bundle gsd-core loads.** Before, the `discuss:pre` gate ran any `scripts/gate.cjs` it found in the global capability directory. A stale or planted copy could then pass the gate for a project-scope install. Now the gate selects a copy the same way gsd-core's loader does: it runs a copy only if that copy has a `capability.json` with id `memanto` and a committed ledger entry. When a global `capability.json` exists, the gate never falls back to a project copy. When no copy qualifies, it blocks with `[gate-bundle]`.

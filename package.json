@@ -1,6 +1,6 @@
 {
   "name": "@taoc/gsd-memanto",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Memanto-backed project memory capability for gsd-core",
   "engines": {
     "node": ">=24"
