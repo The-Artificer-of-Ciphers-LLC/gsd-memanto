@@ -75,6 +75,8 @@ gsd-tools config-set memanto.enabled true
 | `memanto.backend_url` | string | `""` | `http://memanto-backend.example:8080` | Full `http(s)` URL of the running Memanto backend. An empty value blocks the gate. |
 | `memanto.api_url` | string | `""` | `http://localhost:8000` | Full `http(s)` URL of the running Memanto REST API. An empty value blocks the gate. |
 
+The three string keys follow one whitespace rule: a value that is only whitespace counts as empty, and a value with leading or trailing whitespace blocks the gate. The gate never trims a value silently.
+
 The gate resolves these keys the same way `gsd-tools config-get` does. A `GSD_PROJECT` or `GSD_WORKSTREAM` scoped `config.json` is read first, then `.planning/config.json`, then the manifest default. A URL may carry `user:password@`. The gate sends it as a Basic `Authorization` header and never prints it. Over plain `http` that header is sent unencrypted.
 
 ## The discuss:pre gate
@@ -94,8 +96,8 @@ Checks, in the order they are reported:
 | `config-unreadable` | The project config file exists but cannot be read or is not valid JSON, or `GSD_PROJECT` / `GSD_WORKSTREAM` holds an invalid name (a `/`, `\` or `..`). | Fix the JSON syntax in the named file, or make it readable. For an invalid variable: unset it or set it to a name without `/`, `\` or `..`. |
 | `mempalace` | `mempalace.enabled` is the boolean `true`. Memanto and the first-party MemPalace capability are mutually exclusive, so one project cannot enable both. | `gsd_run config-set mempalace.enabled false` (or `gsd_run config-set memanto.enabled false`) |
 | `agent-id` | `memanto.agent_id` is a non-empty string with no leading or trailing whitespace. The value is never echoed. | `gsd_run config-set memanto.agent_id <agent-id>` |
-| `backend-url` | `memanto.backend_url` is set and is an `http` or `https` URL. | `gsd_run config-set memanto.backend_url <http(s)://host:port>` |
-| `api-url` | `memanto.api_url` is set and is an `http` or `https` URL. | `gsd_run config-set memanto.api_url <http(s)://host:port>` |
+| `backend-url` | `memanto.backend_url` is set, has no leading or trailing whitespace, and is an `http` or `https` URL. | `gsd_run config-set memanto.backend_url <http(s)://host:port>` |
+| `api-url` | `memanto.api_url` is set, has no leading or trailing whitespace, and is an `http` or `https` URL. | `gsd_run config-set memanto.api_url <http(s)://host:port>` |
 | `backend-health` | One `GET <backend_url>/health` with a 5-second limit, no retry and no redirects. It passes only on a 2xx response whose JSON body has `"status": "ok"`. The reason is shown in parentheses, for example `(connection)` or `(http-500)`. | Bring the Memanto backend up (the capability never starts it), then check it with `curl -fsS <backend_url>/health`. |
 | `api-health` | The same probe against `<api_url>/health`. | Bring the Memanto REST API up, then check it with `curl -fsS <api_url>/health`. |
 
