@@ -166,20 +166,43 @@ function undeterminedText(loaded, scopeDirs) {
 }
 
 // Round-5 WR-01: renders succeeded and none held a memanto hook.
-function neitherLoadedText(failures) {
-  const why = failures && failures.length ? ` (${describeReasons(failures)})` : '';
-  return `gsd-core loaded neither memanto copy${why}; no memanto hook renders, so its gate does not run (fails open)`;
+// Round-6 WR-01: the wording follows how many memanto manifests are on disk,
+// and the fix follows the reasons gsd-core gave.
+function notLoadedText(failures, scopeDirs, roots) {
+  const inGlobal = gateBundle.hasManifest(roots.gsdHome);
+  const inProject = gateBundle.hasManifest(roots.projectRoot);
+  let what;
+  if (inGlobal && inProject) what = 'gsd-core loaded neither memanto copy';
+  else if (inGlobal || inProject) {
+    const scope = inGlobal ? 'global' : 'project';
+    what = `gsd-core did not load the ${scope} memanto copy at ${scopeDirs[scope]}`;
+  } else what = 'gsd-core loaded no memanto copy';
+  const why = failures && failures.length ? ` (${describeReasons(failures)})` : ' and printed no load error';
+  return `${what}${why}; no memanto hook renders, so its gate does not run (fails open)`;
 }
-const NEITHER_FIX =
+// An ownership clash: another capability holds the id or a memanto config key,
+// skill, agent or command family. Reinstalling memanto does not clear it.
+const CLASH = /^(owns |id collides)/;
+const CLASH_FIX =
   'fix the load error first (for example another capability that owns a memanto config key, skill, agent or command family); reinstalling or removing a memanto copy does not clear it';
+function notLoadedFix(failures) {
+  const reasons = failures || [];
+  if (reasons.length === 0) return `fix the error the render checks report, or ${reinstallFix()}`;
+  if (reasons.every((r) => CLASH.test(r))) return CLASH_FIX;
+  // engines.gsd, validation, manifest or fragment failures: a valid or
+  // compatible release is the cure, as the engines and render:* records say.
+  const fix = `fix the load error the loaded, engines and render checks report, or ${reinstallFix()}`;
+  return reasons.some((r) => CLASH.test(r))
+    ? `${fix}; a reinstall does not clear the ownership clash, so also fix or remove the capability that owns the memanto key`
+    : fix;
+}
 
-function loadedCheck(rows, loaded, scopeDirs, { noneLoaded = false, failures = null } = {}) {
+function loadedCheck(rows, loaded, scopeDirs, { noneLoaded = false, failures = null, roots } = {}) {
   const shown = rows.filter((r) => r.status === 'active').map((r) => r.scope);
   const reported = Boolean(failures && failures.length);
   if (noneLoaded && (shown.length || reported)) {
     const list = shown.length ? `capability list shows memanto active in ${shown.join(' and ')} scope, but ` : '';
-    const fix = reported ? NEITHER_FIX : `fix the error the render checks report, or ${reinstallFix()}`;
-    return record('loaded', 'error', clean(`${list}${neitherLoadedText(failures)}`, REASON_MAX * 2), fix);
+    return record('loaded', 'error', clean(`${list}${notLoadedText(failures, scopeDirs, roots)}`, REASON_MAX * 2), notLoadedFix(failures));
   }
   if (loaded && loaded.scope === 'unknown') {
     return record('loaded', 'error', clean(undeterminedText(loaded, scopeDirs), REASON_MAX * 2), 'fix the load error the render checks report, or remove one of the two copies');
@@ -437,7 +460,7 @@ function gateBundleCheck(loaded, scopeDirs, roots, failures = null, noneLoaded =
   const keep = (scope) => (installed[scope] ? `; keep the installed ${scope} bundle at ${scopeDirs[scope]}` : '');
   if (noneLoaded) {
     // Round-5 WR-01: no memanto hook renders, so no discuss:pre gate runs at all.
-    return record('gate-bundle', 'error', clean(neitherLoadedText(failures), REASON_MAX * 2), NEITHER_FIX);
+    return record('gate-bundle', 'error', clean(notLoadedText(failures, scopeDirs, roots), REASON_MAX * 2), notLoadedFix(failures));
   }
   if (loaded && loaded.scope === 'unknown') {
     // Round-4 WR-01: fail closed when doctor cannot tell which copy loads.
@@ -567,7 +590,7 @@ function collectChecks(cwd) {
         failures = renders.length ? loadFailureReasons(renders) : null;
         // Round-5 WR-01: whether any memanto hook rendered (null: no render succeeded).
         rendered = renders.length ? renders.some((rh) => rh.hooks.some((h) => h && h.capId === 'memanto')) : null;
-        checks.push(loadedCheck(rows, loadedNow(), scopeDirs, { noneLoaded: rendered === false, failures }));
+        checks.push(loadedCheck(rows, loadedNow(), scopeDirs, { noneLoaded: rendered === false, failures, roots }));
       }
       checks.push(consentCheck(rows, scopeDirs));
       checks.push(enginesCheck(rows, scopeDirs, located.version));

@@ -390,7 +390,71 @@ test('round-5 repro: when gsd-core skips both copies, loaded is an error and no 
   assert.equal(gb.status, 'error', JSON.stringify(gb));
   assert.ok(gb.message.includes('gsd-core loaded neither memanto copy'), gb.message);
   assert.ok(d.check('duplicate-install').message.includes('gsd-core loaded neither of them'), d.check('duplicate-install').message);
+  // Round-6 WR-01: every reason is an ownership clash, so the clash fix applies.
+  assert.ok(loaded.fix.includes('does not clear it'), loaded.fix);
 });
+
+// Round-6 WR-01 repros (reviewer's single.cjs): ONE memanto copy, skipped. The
+// wording names that copy (never "neither"), and the fix follows the reason: an
+// ownership clash is not cleared by a reinstall, an engines.gsd failure is, and
+// loaded never contradicts the engines record.
+function plantSquat(h) {
+  const sq = path.join(h, '.gsd', 'capabilities', 'aaa-squat');
+  fs.mkdirSync(sq, { recursive: true });
+  fs.writeFileSync(
+    path.join(sq, 'capability.json'),
+    JSON.stringify({
+      id: 'aaa-squat', role: 'feature', title: 'squat', description: 'squat', version: '0.0.1', tier: 'full', requires: [],
+      runtimeCompat: { supported: ['*'], unsupported: [] }, skills: [], agents: [],
+      config: { 'memanto.enabled': { type: 'boolean', default: false, description: 'x' } }, steps: [], contributions: [], gates: [],
+    }),
+  );
+}
+
+for (const mode of ['gengines', 'gsquat', 'psquat']) {
+  test(`round-6 repro ${mode}: one skipped copy is named as that copy, with a fix that matches the reason`, () => {
+    const h = env.tmpDir('memanto-home-');
+    const project = emptyAgentProject();
+    let bundle;
+    if (mode.startsWith('g')) {
+      env.installBundle({ home: h });
+      bundle = globalBundle(h);
+    } else {
+      bundle = projectInstall(project, h);
+    }
+    if (mode.endsWith('squat')) {
+      plantSquat(h);
+    } else {
+      const mf = path.join(bundle, 'capability.json');
+      const m = JSON.parse(fs.readFileSync(mf, 'utf8'));
+      m.engines = { gsd: '>=9.0.0' };
+      fs.writeFileSync(mf, JSON.stringify(m, null, 2));
+    }
+    assert.equal(env.memantoHooks(env.renderHooks('discuss:pre', { cwd: project, home: h })).length, 0, `${mode} no longer skips the copy`);
+    const d = doctor(project, h, bundle);
+    assert.equal(d.status, 1, JSON.stringify(d.rep));
+    const scope = mode.startsWith('g') ? 'global' : 'project';
+    for (const id of ['loaded', 'gate-bundle']) {
+      const r = d.check(id);
+      assert.equal(r.status, 'error', JSON.stringify(r));
+      assert.ok(!r.message.includes('neither'), `${id} says neither with one copy: ${r.message}`);
+      assert.ok(r.message.includes(`gsd-core did not load the ${scope} memanto copy at ${bundle}`), `${id}: ${r.message}`);
+      if (mode.endsWith('squat')) {
+        assert.ok(r.message.includes('owns config key "memanto.enabled"'), r.message);
+        assert.ok(r.fix.includes('does not clear it'), `${id} clash fix: ${r.fix}`);
+      } else {
+        assert.ok(r.message.includes('incompatible with GSD'), r.message);
+        assert.ok(!r.fix.includes('does not clear'), `${id} contradicts the engines record: ${r.fix}`);
+        assert.ok(r.fix.includes('capability install npm:@taoc/gsd-memanto@'), `${id} fix gives no reinstall: ${r.fix}`);
+        assert.ok(r.fix.includes('engines'), `${id} fix does not point at the engines check: ${r.fix}`);
+      }
+    }
+    if (mode === 'gengines') {
+      const eng = d.check('engines');
+      assert.ok(/install a memanto release/.test(eng.fix), JSON.stringify(eng));
+    }
+  });
+}
 
 // The reviewer's repro (modes fragment and validation): a global capability
 // install plus a consented project install, then the global manifest is broken
