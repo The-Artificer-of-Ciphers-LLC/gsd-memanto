@@ -20,7 +20,8 @@ const PROBE = path.join(__dirname, 'scripts', 'check-probe.cjs');
 const OWN_MANIFEST = path.join(__dirname, 'capability.json');
 const INTERNAL_FIX = 'report this failure; memanto.enabled=false disables Memanto for this project';
 const REASON_MAX = 300;
-const PROBE_TIMEOUT_MS = 15000;
+// Shared with every host query in lib/gsd-host.cjs (WR-01).
+const { PROBE_TIMEOUT_MS } = host;
 const CONTROL = /[\x00-\x1f\x7f-\x9f]/g;
 
 function record(id, status, message, fix) {

@@ -71,6 +71,39 @@ test('GSD_CORE_DIR, when set, wins over the config homes and the project', () =>
   assert.equal(located.version, 'core-dir', JSON.stringify(located));
 });
 
+// --- WR-01: every host spawn is time-bounded by the shared PROBE_TIMEOUT_MS ---
+
+function hangingTools() {
+  const dir = path.join(env.tmpDir('memanto-host-hang-'), 'gsd-core', 'bin');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'gsd-tools.cjs');
+  fs.writeFileSync(file, 'setInterval(() => {}, 1000);\n');
+  return file;
+}
+
+test('lib/gsd-host.cjs bounds host spawns with the same PROBE_TIMEOUT_MS that memanto.cjs exports', () => {
+  const host = require(HOST_LIB);
+  assert.equal(host.PROBE_TIMEOUT_MS, 15000);
+  assert.equal(require('../memanto.cjs').PROBE_TIMEOUT_MS, host.PROBE_TIMEOUT_MS);
+});
+
+for (const [label, call] of [
+  ['runtime-identity', (h, tools) => h.hostIdentity(tools, { timeoutMs: 300 })],
+  ['capability list', (h, tools) => h.capabilityList(tools, { cwd: path.dirname(tools), timeoutMs: 300 })],
+  ['loop render-hooks', (h, tools) => h.renderHooksAt(tools, 'discuss:pre', { cwd: path.dirname(tools), timeoutMs: 300 })],
+]) {
+  test(`a gsd-tools that never exits makes ${label} fail with a timeout instead of hanging doctor`, () => {
+    const host = require(HOST_LIB);
+    const tools = hangingTools();
+    const started = Date.now();
+    const res = call(host, tools);
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 10000, `${label} took ${elapsed} ms`);
+    assert.equal(res.ok, false, JSON.stringify(res));
+    assert.match(res.reason, /timed out after 300 ms/, JSON.stringify(res));
+  });
+}
+
 test('with no gsd-core in any config home, the project-local candidates are still searched', () => {
   const { home, project } = dirs();
   plantStub(path.join(project, '.claude'), 'project-claude');
