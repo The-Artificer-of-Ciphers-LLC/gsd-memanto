@@ -85,12 +85,12 @@ http(s)://[user[:password]@]host[:port][/path]
 
 - The scheme is `http` or `https`, in lower case.
 - The user name and password use only URL-safe characters (letters, digits and `-._~!$&'()*+,;=`) and `%XX` escapes. Write `@` inside a password as `%40`, and `:`, `/`, `?`, `#` as `%3A`, `%2F`, `%3F`, `%23`.
-- `@` appears at most once, and only as the `user:password` separator. An `@` in the base path, query or fragment is not supported, encoded (`%40`) or not.
+- `@` appears at most once, and only as the `user:password` separator. An `@` in the base path is not supported, encoded (`%40`) or not. Remove it from the path; a Memanto base URL has no reason to hold one.
 - The host is a name or IPv4 address (letters, digits, `.` and `-`) or a bracketed IPv6 address. The port is 1 to 5 digits, at most 65535.
 - The base path uses URL-safe characters and valid `%XX` escapes. A query (`?`), a fragment (`#`), a backslash, whitespace, control characters and non-ASCII characters (such as a full-width `＠`) are rejected anywhere.
 - Node's URL parser must read the same scheme, host and port from the value. A host it rewrites, such as `0x7f.1`, is rejected.
 
-A value that does not match blocks the gate with its `backend-url` or `api-url` check and is never probed. It is printed only as `memanto.<key>=<redacted>`, so no part of it is ever echoed. For example, `http://127.0.0.1\alice:s3cret@memanto.internal:8000` and `http://u:12/x@host:8000` are rejected, because the `\` and `/` before the `@` make the host unclear.
+A value that does not match blocks the gate with its `backend-url` or `api-url` check and is never probed. It is printed only as `value <redacted>`, followed by the rule for its key, so no part of it is ever echoed. For example, `http://127.0.0.1\alice:s3cret@memanto.internal:8000` and `http://u:12/x@host:8000` are rejected, because the `\` and `/` before the `@` make the host unclear.
 
 An accepted URL is printed only as `scheme://host[:port]`, with `/<base path>` in place of any base path. The user name, password and base path are never printed. The gate probes `<base path>/health` at that host only. It sends the decoded `user:password` there as a Basic `Authorization` header. Over plain `http` that header is sent unencrypted. `http://@host` has an empty user name and password: it is accepted and sends no `Authorization` header.
 
@@ -111,8 +111,8 @@ Checks, in the order they are reported:
 | `config-unreadable` | The project config file exists but cannot be read or is not valid JSON, or `GSD_PROJECT` / `GSD_WORKSTREAM` holds an invalid name (a `/`, `\` or `..`). | Fix the JSON syntax in the named file, or make it readable. For an invalid variable: unset it or set it to a name without `/`, `\` or `..`. |
 | `mempalace` | `mempalace.enabled` is the boolean `true`. Memanto and the first-party MemPalace capability are mutually exclusive, so one project cannot enable both. | `gsd_run config-set mempalace.enabled false` (or `gsd_run config-set memanto.enabled false`) |
 | `agent-id` | `memanto.agent_id` is a non-empty string with no leading or trailing whitespace. The value is never echoed. | `gsd_run config-set memanto.agent_id <agent-id>` |
-| `backend-url` | `memanto.backend_url` is set, has no leading or trailing whitespace, and matches the strict endpoint form above. | `gsd_run config-set memanto.backend_url <http(s)://host:port>`; for a value outside the strict form, `<http(s)://[user[:password]@]host[:port][/path]>` |
-| `api-url` | `memanto.api_url` is set, has no leading or trailing whitespace, and matches the strict endpoint form above. | `gsd_run config-set memanto.api_url <http(s)://host:port>`; for a value outside the strict form, `<http(s)://[user[:password]@]host[:port][/path]>` |
+| `backend-url` | `memanto.backend_url` is set, has no leading or trailing whitespace, and matches the strict endpoint form above. | `gsd_run config-set memanto.backend_url <http(s)://host:port>`; for a value outside the strict form, the problem `value <redacted>` and the rule `memanto.backend_url must be http(s)://[user[:password]@]host[:port][/path] using URL-safe characters; '@' is allowed only as the user:password separator (write '@' inside a password as %40)` |
+| `api-url` | `memanto.api_url` is set, has no leading or trailing whitespace, and matches the strict endpoint form above. | `gsd_run config-set memanto.api_url <http(s)://host:port>`; for a value outside the strict form, the problem `value <redacted>` and the same rule for `memanto.api_url` |
 | `backend-health` | One `GET <backend_url>/health` with a 5-second limit, no retry and no redirects. It passes only on a 2xx response whose JSON body has `"status": "ok"`. The reason is shown in parentheses, for example `(connection)` or `(http-500)`. | Bring the Memanto backend up (the capability never starts it), then check it with `curl -fsS <backend_url>/health`. The hint shows only `scheme://host[:port]`, with `/<base path>` in place of a base path. |
 | `api-health` | The same probe against `<api_url>/health`. | Bring the Memanto REST API up, then check it with `curl -fsS <api_url>/health`. |
 

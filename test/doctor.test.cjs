@@ -147,8 +147,9 @@ for (const [backend, api] of DOCTOR_REJECTED) {
       for (const res of [viaGsd(project, { raw }), direct(project, { raw })]) {
         assert.equal(res.status, 1, `${res.stdout}${res.stderr}`);
         const out = res.stdout + res.stderr;
-        assert.ok(out.includes('memanto.backend_url=<redacted>'), out);
-        assert.ok(out.includes('memanto.api_url=<redacted>'), out);
+        assert.ok(out.includes('value <redacted>'), out);
+        assert.ok(out.includes('memanto.backend_url must be http(s)://[user[:password]@]host[:port][/path]'), out);
+        assert.ok(out.includes('memanto.api_url must be http(s)://[user[:password]@]host[:port][/path]'), out);
         for (const secret of DOCTOR_SECRETS) assert.ok(!out.includes(secret), `leaked ${secret}: ${out}`);
       }
     }

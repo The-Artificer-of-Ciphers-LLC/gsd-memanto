@@ -159,6 +159,22 @@ const ACCEPTED = [
   ['http://Memanto.Example:8080/a/b/', 'http://memanto.example:8080/<base path>'],
 ];
 
+// Round-4 IN-02: one message for every rejected value. It states the rule, so a
+// credential-free URL with an '@' in its path is told to remove it, and it fits
+// LINE_MAX (250) untruncated.
+function rejectedLine(key) {
+  const id = key === 'backend_url' ? 'backend-url' : 'api-url';
+  return (
+    `memanto: BLOCKED [${id}] value <redacted> -> memanto.${key} must be ` +
+    "http(s)://[user[:password]@]host[:port][/path] using URL-safe characters; '@' is allowed only as the " +
+    "user:password separator (write '@' inside a password as %40)"
+  );
+}
+
+test('the rejected-value line fits LINE_MAX for both keys', () => {
+  for (const key of ['backend_url', 'api_url']) assert.ok(rejectedLine(key).length <= 250, rejectedLine(key));
+});
+
 for (const [value, secrets] of REJECTED) {
   const label = JSON.stringify(value);
   test(`validateEndpointUrl rejects ${label}`, () => {
@@ -175,8 +191,8 @@ for (const [value, secrets] of REJECTED) {
     assert.equal(r.block, true, r.message);
     assert.deepEqual(r.ids, ['backend-url', 'api-url'], r.message);
     for (const key of ['backend_url', 'api_url']) {
-      const line = lineFor(r, key === 'backend_url' ? 'backend-url' : 'api-url');
-      assert.ok(line.includes(`memanto.${key}=<redacted>`), line);
+      const id = key === 'backend_url' ? 'backend-url' : 'api-url';
+      assert.equal(lineFor(r, id), rejectedLine(key));
     }
     for (const secret of secrets) assert.ok(!r.message.includes(secret), `leaked ${JSON.stringify(secret)}: ${r.message}`);
     assert.ok(!r.message.includes('curl'), `probed: ${r.message}`);
@@ -321,7 +337,7 @@ test('absent URL keys block with both URL lines (defaults are empty)', () => {
 test('a scheme-less backend_url blocks with [backend-url] and skips its health check', () => {
   const r = runGate({ backend_url: 'localhost:8000', api_url: servers.ok.url });
   assert.deepEqual(r.ids, ['backend-url'], r.message);
-  assert.ok(lineFor(r, 'backend-url').includes('memanto.backend_url=<redacted>'), r.message);
+  assert.equal(lineFor(r, 'backend-url'), rejectedLine('backend_url'));
 });
 
 test('an ftp api_url blocks with [api-url] and sends no request', () => {
