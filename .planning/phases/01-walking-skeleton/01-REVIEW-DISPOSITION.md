@@ -4,9 +4,9 @@ Rounds 1 (14), 2 (9), 3 (4) and 4 (5) fixed, see 01-REVIEW-FIX.md. Round 5 findi
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-01 | warning | open | 01-REVIEW.md |
-| WR-02 | warning | open | 01-REVIEW.md |
-| IN-01 | info | open | 01-REVIEW.md |
+| WR-01 | warning | fixed | 01-REVIEW-FIX.md |
+| WR-02 | warning | fixed | 01-REVIEW-FIX.md |
+| IN-01 | info | fixed | 01-REVIEW-FIX.md |
 
-open: 3
+open: 0
 total: 3
