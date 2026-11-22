@@ -23,7 +23,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 ## Phase Details
 
 ### Phase 1: Walking Skeleton
-**Goal**: The owner can install the capability once globally, enable it in one project, and watch a real discuss-phase run pass or halt on a Memanto gate. Doctor exposes every state where the capability silently fails open. The platform unknowns that could change the bundle's structure are settled before anything is built on them.
+**Goal**: As a GSD user on gsd-core, I want to install Memanto once and pass its gate, so that discuss-phase runs with memory.
 **Mode:** mvp
 **Depends on**: Nothing (first phase)
 **Requirements**: INST-01, INST-02, INST-03, INST-04, INST-05, CONF-01, CONF-02, CONF-03, GATE-03, GATE-06, TEST-01, TEST-02
