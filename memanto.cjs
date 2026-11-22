@@ -5,6 +5,7 @@
 // for the states in which gsd-core does not route the family (not consented,
 // outside engines.gsd, failed validation, not in a ledger).
 
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -13,7 +14,8 @@ const { resolveConfig } = require('./lib/config.cjs');
 const { cap, CONTROL_CHARS } = require('./lib/health.cjs');
 const host = require('./lib/gsd-host.cjs');
 const gateBundle = require('./lib/gate-bundle.cjs');
-const { classifyInstall, installRecords, renderFix, STATES, POST_COLLISION, POST_COLLISION_REASONS } = require('./lib/install-state.cjs');
+const { readJsonOrNull, MANIFEST_MAX_BYTES } = require('./lib/safe-read.cjs');
+const { classifyInstall, installRecords, renderFix, reasonClass, REASON_CLASSES, STATES, POST_COLLISION, POST_COLLISION_REASONS } = require('./lib/install-state.cjs');
 
 const USAGE = 'Usage: gsd_run memanto doctor [--raw]';
 const DIRECT_FORM = 'node "${GSD_HOME:-$HOME}/.gsd/capabilities/memanto/memanto.cjs" doctor';
@@ -32,12 +34,10 @@ function clean(value, max) {
   return cap(String(value).replace(CONTROL_CHARS, '?'), max);
 }
 
+// Round-9 CR-01: never a plain readFileSync. A FIFO, device or oversized file
+// is unreadable (null) instead of blocking doctor (lib/safe-read.cjs).
 function readJson(file) {
-  try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch {
-    return null;
-  }
+  return readJsonOrNull(file, MANIFEST_MAX_BYTES);
 }
 
 function isFile(file) {
@@ -175,27 +175,127 @@ function enginesCheck(rows, scopeDirs, hostVersion) {
   );
 }
 
+// Round-9 WR-02: the loop points gsd-core defines (loop-host-contract.cjs
+// LOOP_HOST_CONTRACT; test/render-points.test.cjs fails when they change). A
+// manifest point outside this list is never rendered, so a planted manifest
+// cannot add spawns or put control characters into a record id.
+const LOOP_POINTS = Object.freeze([
+  'discuss:pre',
+  'discuss:post',
+  'plan:pre',
+  'plan:post',
+  'execute:pre',
+  'execute:wave:pre',
+  'execute:wave:post',
+  'execute:post',
+  'verify:pre',
+  'verify:post',
+  'ship:pre',
+  'ship:post',
+]);
+
 function pointsOf(manifest, points) {
   for (const kind of ['gates', 'steps', 'contributions']) {
     for (const h of manifest && Array.isArray(manifest[kind]) ? manifest[kind] : []) {
-      if (h && typeof h.point === 'string' && !points.includes(h.point)) points.push(h.point);
+      if (points.length >= LOOP_POINTS.length) return points;
+      if (h && LOOP_POINTS.includes(h.point) && !points.includes(h.point)) points.push(h.point);
     }
   }
   return points;
 }
 
-// Round-8 CR-01: the points to render are discuss:pre, every point THIS
-// doctor's own shipped manifest declares, and every point the installed
-// manifests declare. An installed manifest with "gates": [] can no longer hide
-// the gate point, so a missing gate always shows as a render error.
-function declaredPoints(scopeDirs) {
+// Round-8 CR-01: discuss:pre is always rendered, and every point THIS doctor's
+// own shipped manifest declares, so an installed manifest with "gates": []
+// cannot hide the gate point. Round-9 WR-02: an installed manifest adds its
+// points only when it is the copy gsd-core loads (loaded; null otherwise), and
+// only known loop points, at most one render per loop point.
+function pointsToRender(own, loaded) {
   const points = ['discuss:pre'];
-  pointsOf(readJson(OWN_MANIFEST), points);
-  for (const dir of [scopeDirs.global, scopeDirs.project]) pointsOf(readJson(path.join(dir, 'capability.json')), points);
+  pointsOf(own, points);
+  if (loaded) pointsOf(loaded, points);
   return points;
 }
 
+function readManifests(roots) {
+  return { global: gateBundle.readManifest(roots.gsdHome), project: gateBundle.readManifest(roots.projectRoot) };
+}
+
+// Round-9 CR-01: a capability.json or ledger in either scope that exists but is
+// not a regular file under the size cap (a FIFO, socket, device, a symlink to
+// one, or too large). Doctor and gsd-core both treat it as unreadable.
+function unreadableCheck(scopeDirs, roots, version) {
+  const seen = new Set();
+  const found = [];
+  for (const [scope, root] of [['global', roots.gsdHome], ['project', roots.projectRoot]]) {
+    for (const u of gateBundle.unreadableFiles(root)) {
+      if (seen.has(u.file)) continue;
+      seen.add(u.file);
+      found.push({ ...u, scope, ledgered: gateBundle.ledgerState(root) !== 'none' });
+    }
+  }
+  if (!found.length) return null;
+  const fixes = found.map((u) => {
+    if (u.kind === 'manifest' && u.ledgered) {
+      return `reinstall the ${u.scope} copy in place: gsd-tools capability install npm:@taoc/gsd-memanto@${version} --yes${u.scope === 'project' ? ' --scope project' : ''}`;
+    }
+    if (u.kind === 'manifest') return `move ${u.file} aside (no ${u.scope} ledger lists that copy)`;
+    return `move ${u.file} aside, then reinstall memanto in ${u.scope} scope (gsd-core cannot read that ledger either)`;
+  });
+  return record(
+    'unreadable-files',
+    'error',
+    clean(`${found.map((u) => u.reason).join('; ')}; doctor and gsd-core read only small regular files there, so doctor treats it as invalid and never reads it`, REASON_MAX * 2),
+    clean(fixes.join('; '), REASON_MAX * 2),
+  );
+}
+
 const isMemantoGate = (h) => Boolean(h && h.capId === 'memanto' && h.kind === 'gate');
+
+// Round-9 WR-01: the discuss:pre gate THIS doctor ships. A rendered memanto
+// gate counts only when it matches it exactly: kind gate, blocking true,
+// onError halt, a command-exit-zero predicate and the same command string.
+// blocking and onError are checked against constants too, so an edited own
+// manifest cannot relax them. A missing own gate matches nothing (fail closed).
+function shippedGate() {
+  const m = readJson(OWN_MANIFEST);
+  const g = m && Array.isArray(m.gates) ? m.gates.find((x) => x && x.point === 'discuss:pre') : null;
+  return g && g.check && g.check.predicate ? g : null;
+}
+
+// The sha256 of the shipped predicate command. The own capability.json sits in
+// the same editable bundle as this file, so the command is also checked
+// against this constant: doctor run from a bundle whose capability.json was
+// edited still reports the edit. test/gate-bundle.test.cjs fails when
+// capability.json changes the command without updating this constant.
+const SHIPPED_GATE_COMMAND_SHA256 = 'ac9ed2a17ed50c29f6d759cdca8fabc455e0709b69b513dfac32cf85fd46bd06';
+const sha256 = (s) => crypto.createHash('sha256').update(String(s), 'utf8').digest('hex');
+
+function gateMismatch(h, shipped) {
+  if (!isMemantoGate(h)) return ['kind'];
+  const p = h.check && h.check.predicate ? h.check.predicate : {};
+  const fields = [];
+  const commandOk =
+    shipped &&
+    p.kind === 'command-exit-zero' &&
+    p.kind === shipped.check.predicate.kind &&
+    typeof p.command === 'string' &&
+    p.command === shipped.check.predicate.command &&
+    sha256(p.command) === SHIPPED_GATE_COMMAND_SHA256;
+  if (!commandOk) fields.push('command');
+  if (h.blocking !== true || (shipped && h.blocking !== shipped.blocking)) fields.push('blocking');
+  if (h.onError !== 'halt' || (shipped && h.onError !== shipped.onError)) fields.push('onError');
+  return fields;
+}
+
+// The fields in which the memanto gates rendered at discuss:pre differ from
+// the shipped gate: null when one matches or none rendered.
+function gateMismatchAt(rh, shipped) {
+  const gates = rh.hooks.filter(isMemantoGate);
+  if (!gates.length || gates.some((h) => gateMismatch(h, shipped).length === 0)) return null;
+  return gateMismatch(gates[0], shipped).join(', ');
+}
+
+const rendersShippedGate = (rh, shipped) => rh.hooks.some((h) => isMemantoGate(h) && gateMismatch(h, shipped).length === 0);
 
 function loadFailureReason(rh) {
   const lines = [...rh.warnings, ...String(rh.stderr || '').split('\n')];
@@ -205,17 +305,32 @@ function loadFailureReason(rh) {
   return m ? m[1] : line;
 }
 
-function renderCheck(point, rh) {
+// loadedFix: the loaded record's fix (the remedy for the copy it names), used
+// when gsd-core reported no load error (round-9 IN-03).
+function renderCheck(rawPoint, rh, shipped, loadedFix) {
+  // Round-9 WR-02: the point is cleaned before it reaches the id or a message.
+  const point = clean(rawPoint, 64);
   const id = `render:${point}`;
+  const remedy = loadedFix || reinstallFix();
   if (!rh.ok) {
     return record(id, 'error', clean(`loop render-hooks ${point} failed: ${rh.reason}`, REASON_MAX), 'run gsd_run loop render-hooks to see the host error');
   }
-  if (point === 'discuss:pre' && rh.hooks.some(isMemantoGate)) return record(id, 'ok', 'the memanto gate renders at discuss:pre', '');
+  if (point === 'discuss:pre' && rendersShippedGate(rh, shipped)) return record(id, 'ok', 'the memanto gate renders at discuss:pre and matches this release', '');
+  if (point === 'discuss:pre' && rh.hooks.some(isMemantoGate)) {
+    return record(
+      id,
+      'error',
+      `the installed memanto gate at discuss:pre does not match this release: ${gateMismatchAt(rh, shipped)}; it is not enforced as shipped (fails open)`,
+      remedy,
+    );
+  }
   if (point !== 'discuss:pre' && rh.hooks.some((h) => h && h.capId === 'memanto')) return record(id, 'ok', `memanto renders at ${point}`, '');
   const reason = loadFailureReason(rh);
   const why = reason ? ` (host: ${clean(reason, REASON_MAX)})` : '';
   const what = point === 'discuss:pre' ? 'no memanto gate renders at discuss:pre' : `no memanto hook renders at ${point}`;
-  return record(id, 'error', `${what}; it is not enforced (fails open)${why}`, renderFix(reason, reinstallFix()));
+  // "id collides" is not a load error of the copy gsd-core kept: its remedy applies.
+  const loadError = reason && reasonClass(reason) !== REASON_CLASSES.COLLISION;
+  return record(id, 'error', `${what}; it is not enforced (fails open)${why}`, loadError ? renderFix(reason, reinstallFix()) : remedy);
 }
 
 // Every "capability "memanto" failed to load (<reason>)" warning gsd-core
@@ -290,10 +405,10 @@ function sameReal(a, b) {
 // null when capability list could not be read; renders are the successful
 // render-hooks results as { point, rh } (none when memanto is disabled or
 // nothing rendered).
-function gatherEvidence({ scopeDirs, roots, rows, renders, enabled = true }) {
+function gatherEvidence({ scopeDirs, roots, rows, renders, enabled = true, manifests: read, shipped = shippedGate() }) {
   const rootOf = { global: roots.gsdHome, project: roots.projectRoot };
   const per = (fn) => ({ global: fn('global'), project: fn('project') });
-  const manifests = per((s) => gateBundle.readManifest(rootOf[s]));
+  const manifests = read || readManifests(roots);
   const alias = rootsAlias(roots);
   const runs = gateBundle.resolveGateBundle(roots);
   let gateRuns = null;
@@ -313,7 +428,9 @@ function gatherEvidence({ scopeDirs, roots, rows, renders, enabled = true }) {
     render: {
       ran: renders.length > 0,
       hook: rhs.some((rh) => rh.hooks.some((h) => h && h.capId === 'memanto')),
-      gate: renders.some((r) => r.point === 'discuss:pre' && r.rh.hooks.some(isMemantoGate)),
+      // Round-9 WR-01: the gate counts only when it is the shipped gate.
+      gate: renders.some((r) => r.point === 'discuss:pre' && rendersShippedGate(r.rh, shipped)),
+      mismatch: renders.filter((r) => r.point === 'discuss:pre').map((r) => gateMismatchAt(r.rh, shipped)).find(Boolean) || null,
     },
     reasons: renders.length ? loadFailureReasons(rhs) : [],
     enabled,
@@ -356,11 +473,13 @@ function collectChecks(cwd) {
   };
   const roots = { gsdHome, projectRoot: cwd };
   const cfg = resolveConfig({ cwd, env });
+  const manifests = readManifests(roots);
+  const shipped = shippedGate();
   const checks = [];
   let rows = null;
   let listOk = false;
   const renders = [];
-  const renderChecks = [];
+  const rendered = [];
 
   const located = host.locateGsdTools({ env, mainFilename: require.main && require.main.filename });
   checks.push(locatedCheck(located));
@@ -368,7 +487,18 @@ function collectChecks(cwd) {
   checks.push(rec);
 
   let listFailure = null;
-  if (located.ok) {
+  // Round-9 CR-01: gsd-core reads .planning/config.json with a plain read, so
+  // with a FIFO or device there every capability list and render-hooks call
+  // blocks until PROBE_TIMEOUT_MS. Doctor does not start them; it reports why.
+  const hostBlocked = !cfg.ok && cfg.kind === 'read' && cfg.code === 'ENOTREG';
+  if (located.ok && hostBlocked) {
+    listFailure = record(
+      'capability-list',
+      'error',
+      clean(`doctor did not query gsd-core (capability list, render-hooks): ${cfg.error}, and gsd-core blocks reading it`, REASON_MAX),
+      clean(`replace ${cfg.path} with a regular JSON file, then run doctor again`, REASON_MAX),
+    );
+  } else if (located.ok) {
     const opts = { cwd, env };
     const list = host.capabilityList(located.tools, opts);
     if (!list.ok) {
@@ -378,21 +508,37 @@ function collectChecks(cwd) {
       rows = list.rows.filter((r) => r && r.id === 'memanto');
     }
     if (enabled) {
-      for (const point of declaredPoints(scopeDirs)) {
-        const rh = host.renderHooksAt(located.tools, point, opts);
-        if (rh.ok) renders.push({ point, rh });
-        renderChecks.push(renderCheck(point, rh));
-      }
+      const renderAll = (points) => {
+        for (const point of points) {
+          if (rendered.some((r) => r.point === point)) continue;
+          const rh = host.renderHooksAt(located.tools, point, opts);
+          if (rh.ok) renders.push({ point, rh });
+          rendered.push({ point, rh });
+        }
+      };
+      // Round-9 WR-02: first discuss:pre and the doctor's own points; then the
+      // points of the installed manifest gsd-core loads, if any (known loop
+      // points only, never a manifest gsd-core skipped or did not activate).
+      const own = readJson(OWN_MANIFEST);
+      renderAll(pointsToRender(own, null));
+      const first = classifyInstall(gatherEvidence({ scopeDirs, roots, rows, renders, enabled, manifests, shipped }));
+      if (first.loaded) renderAll(pointsToRender(own, manifests[first.loaded.scope]));
     }
   }
 
   // Round-7: the evidence is gathered once and classified once; loaded,
   // consent, duplicate-install and gate-bundle all come from that one result.
-  const cls = classifyInstall(gatherEvidence({ scopeDirs, roots, rows, renders, enabled }));
+  const cls = classifyInstall(gatherEvidence({ scopeDirs, roots, rows, renders, enabled, manifests, shipped }));
   const recs = installRecords(cls, { version: ownVersion(), reinstall: reinstallFix(), clean: cleanFactor });
+  const unreadable = unreadableCheck(scopeDirs, roots, ownVersion());
+  // Round-9 IN-03: built after the classification, so a no-reason render fix
+  // is the loaded record's own remedy (the reinstall of the copy it names).
+  const renderChecks = rendered.map((r) => renderCheck(r.point, r.rh, shipped, recs.loaded.fix));
 
   if (listFailure) checks.push(listFailure);
-  if (located.ok && enabled) checks.push(recs.loaded);
+  if (unreadable) checks.push(unreadable);
+  // Round-9 IN-01: with memanto disabled, loaded is a warn (see the README).
+  if (located.ok) checks.push(recs.loaded);
   if (listOk) {
     checks.push(recs.consent);
     checks.push(enginesCheck(rows, scopeDirs, located.version));
@@ -402,7 +548,13 @@ function collectChecks(cwd) {
   checks.push(recs.gateBundle);
   checks.push(discussBypassCheck(cfg));
   if (enabled) checks.push(...gateChecks(cwd));
-  return checks;
+  // Round-9 WR-02: no control character reaches the terminal or the JSON,
+  // whatever a record interpolated (lengths are capped where each is built).
+  return checks.map((c) => ({ ...c, id: sanitize(c.id), message: sanitize(c.message), fix: sanitize(c.fix) }));
+}
+
+function sanitize(value) {
+  return String(value === undefined || value === null ? '' : value).replace(CONTROL_CHARS, '?');
 }
 
 function renderText(checks) {
@@ -458,6 +610,9 @@ module.exports = {
   POST_COLLISION,
   POST_COLLISION_REASONS,
   PROBE_TIMEOUT_MS,
+  LOOP_POINTS,
+  pointsToRender,
+  SHIPPED_GATE_COMMAND_SHA256,
 };
 
 if (require.main === module) {

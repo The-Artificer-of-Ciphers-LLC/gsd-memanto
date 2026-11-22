@@ -70,7 +70,7 @@ function evOf(r) {
     ledger: { global: r.gLed, project: r.pLed },
     gateRuns,
     rows: r.rows,
-    render: { ran: r.ran, hook: r.hook, gate: r.gate },
+    render: { ran: r.ran, hook: r.hook, gate: r.gate, ...(r.mismatch ? { mismatch: r.mismatch } : {}) },
     reasons: r.reasons,
     enabled: r.enabled,
   };
@@ -191,12 +191,19 @@ const CASES = [
     for (const k of ['loaded', 'gateBundle']) {
       assert.equal(r[k].status, 'error', JSON.stringify(r[k]));
       assert.ok(r[k].message.includes('declares no discuss:pre gate'), r[k].message);
-      assert.ok(r[k].fix.includes('reinstall the global copy in place'), r[k].fix);
+      assert.ok(r[k].fix.includes(`reinstall the global copy at ${D.global} in place at this release`), r[k].fix);
     }
   }],
   ['two installs, the global declares no gate and holds the id (r8 twonogate)', { g: true, p: true, gInst: true, pInst: true, gNoGate: true, rows: [row(G), row(P)], reasons: [COLL] }, STATES.GLOBAL_NO_GATE, G, (r) => {
     assert.ok(r.duplicate.message.includes('gsd-core keeps the global one, which renders no memanto gate'), r.duplicate.message);
-    assert.ok(r.loaded.fix.includes('reinstall it in place'), r.loaded.fix);
+    assert.ok(r.loaded.fix.includes('in place'), r.loaded.fix);
+    // Round-9 WR-03: the load error comes first, and the healthy project install is kept.
+    assert.ok(r.duplicate.fix.startsWith('fix the load error first (see loaded)'), r.duplicate.fix);
+    assert.ok(r.duplicate.fix.includes(`the global copy at ${D.global}`) && r.duplicate.fix.includes('in place'), r.duplicate.fix);
+    // Round-9 IN-03.
+    for (const k of ['loaded', 'gateBundle', 'duplicate']) assert.ok(!r[k].fix.includes('memanto.enabled'), `${k}: ${r[k].fix}`);
+    assert.ok(r.loaded.fix.startsWith(`reinstall the global copy at ${D.global} in place at this release (its capability.json declares no discuss:pre gate)`), r.loaded.fix);
+    assert.ok(r.duplicate.fix.includes(`keep the project copy at ${D.project}`), r.duplicate.fix);
   }],
   ['two installs, the global is silently rejected and the project gate renders (r8 twoinvalid)', { g: true, p: true, gInst: true, pInst: true, gNoGate: true, rows: [row(G), row(P)], hook: true }, STATES.PROJECT_LOADED, P, (r) => {
     assert.equal(r.gateBundle.status, 'error', JSON.stringify(r.gateBundle));
@@ -209,9 +216,28 @@ const CASES = [
   }],
   ['global install renders a hook elsewhere but no gate', { g: true, gInst: true, rows: [row(G)], hook: true, gate: false }, STATES.GLOBAL_NO_GATE, G, (r) => {
     assert.ok(r.loaded.message.includes('renders no memanto gate at discuss:pre'), r.loaded.message);
+    // Round-9 IN-03: gsd-core loaded the copy, so memanto.enabled is not the cause.
+    for (const k of ['loaded', 'gateBundle']) {
+      assert.ok(!r[k].fix.includes('memanto.enabled'), r[k].fix);
+      assert.ok(r[k].fix.startsWith(`reinstall the global copy at ${D.global} in place at this release`), r[k].fix);
+    }
   }],
-  ['project copy loads, renders no gate', { g: true, p: true, gInst: true, pInst: true, pNoGate: true, rows: [row(G, 'incompatible'), row(P)], hook: true, gate: false }, STATES.PROJECT_NO_GATE, P, (r) => {
+  // Round-9 WR-01: a memanto gate renders, but it is not the shipped one.
+  ['installed global gate does not match this release (r9 gexit0)', { g: true, gInst: true, rows: [row(G)], hook: true, gate: false, mismatch: 'command' }, STATES.GLOBAL_NO_GATE, G, (r) => {
+    for (const k of ['loaded', 'gateBundle']) {
+      assert.equal(r[k].status, 'error', JSON.stringify(r[k]));
+      assert.ok(r[k].message.includes('the installed memanto gate at discuss:pre does not match this release: command'), r[k].message);
+      assert.ok(r[k].fix.startsWith(`reinstall the global copy at ${D.global} in place`), r[k].fix);
+    }
+  }],
+  ['two installs, the global gate does not match and holds the id (r9 gnonblock)', { g: true, p: true, gInst: true, pInst: true, rows: [row(G), row(P)], hook: true, gate: false, mismatch: 'blocking, onError', reasons: [COLL] }, STATES.GLOBAL_NO_GATE, G, (r) => {
+    assert.ok(r.duplicate.message.includes('does not match this release (blocking, onError)'), r.duplicate.message);
+  }],
+  ['project copy loads, renders no gate',{ g: true, p: true, gInst: true, pInst: true, pNoGate: true, rows: [row(G, 'incompatible'), row(P)], hook: true, gate: false }, STATES.PROJECT_NO_GATE, P, (r) => {
     assert.ok(r.loaded.message.includes(`gsd-core loaded the project memanto copy at ${D.project}, but it renders no memanto gate`), r.loaded.message);
+    // Round-9 WR-03, the mirror case.
+    assert.ok(r.duplicate.fix.startsWith('fix the load error first (see loaded)'), r.duplicate.fix);
+    assert.ok(r.duplicate.fix.includes(`keep the global copy at ${D.global}`), r.duplicate.fix);
   }],
   ['installed global renders nothing and gives no reason (r6 IN-01)', { g: true, gInst: true, rows: [row(G)] }, STATES.UNEXPLAINED, null, (r) => {
     assert.ok(r.gateBundle.message.includes('printed no load error'), r.gateBundle.message);
@@ -306,8 +332,12 @@ for (const [name, o, state, loadedScope, extra] of CASES) {
     const cls = classifyInstall(evOf(r));
     assert.equal(cls.state, state, JSON.stringify(cls));
     const recs = installRecords(cls, OPTS);
-    // doctor prints loaded only when memanto is enabled.
-    assertConsistent([r.enabled ? recs.loaded : null, recs.consent, recs.duplicate, recs.gateBundle], factsOf(r, loadedScope), name);
+    // Round-9 IN-01: doctor prints loaded also when memanto is disabled (a warn).
+    assertConsistent([recs.loaded, recs.consent, recs.duplicate, recs.gateBundle], factsOf(r, loadedScope), name);
+    if (!r.enabled) {
+      assert.equal(recs.loaded.status, 'warn', JSON.stringify(recs.loaded));
+      assert.ok(recs.loaded.message.startsWith('memanto.enabled is not true, so gsd-core loads no memanto hook'), recs.loaded.message);
+    }
     // The case's own loaded column agrees with the classifier.
     const scope = loadedScope === '?' ? null : loadedScope;
     assert.equal(cls.loaded ? cls.loaded.scope : null, scope, JSON.stringify(cls.loaded));

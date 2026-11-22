@@ -134,6 +134,22 @@ function assertConsistent(records, facts = {}, label = '') {
       assert.ok(ok, `${label} ${claims.get(c).join(', ')} claim gsd-core loaded ${c}, but the ${expected} copy loaded`);
     }
   }
+  // Round-9 WR-03: a copy loaded but renders no shipped gate (a no-gate state).
+  // The cure is that copy; no fix removes or deletes the other copy, which may
+  // be the only healthy install.
+  if (facts.gateRendered === false && (expected === 'global' || expected === 'project') && facts.dirs) {
+    const loadedDir = path.resolve(facts.dirs[expected]);
+    for (const r of list) {
+      for (const m of r.fix.matchAll(/capability remove memanto(?: --scope (project|global))?/g)) {
+        assert.equal(m[1] || 'global', expected, `${at(r)} removes the ${m[1] || 'global'} copy, but the ${expected} copy is the one that renders no gate`);
+      }
+      for (const m of r.fix.matchAll(/\bdelete (\S+)/g)) {
+        const d = path.resolve(m[1]);
+        if (facts.stray && d === path.resolve(facts.stray)) continue;
+        assert.equal(d, loadedDir, `${at(r)} deletes ${m[1]}, but the ${expected} copy at ${loadedDir} is the one that renders no gate`);
+      }
+    }
+  }
   // gate-bundle is ok only when the predicate runs the copy that loaded.
   if (gb && expected && expected !== '?' && facts.dirs && facts.gateRunsDir !== undefined) {
     const runsLoaded = Boolean(facts.gateRunsDir) && path.resolve(facts.gateRunsDir) === path.resolve(facts.dirs[expected]);

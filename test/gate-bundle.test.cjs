@@ -22,6 +22,14 @@ const MANIFEST = JSON.parse(fs.readFileSync(path.join(env.REPO_ROOT, 'capability
 const PREDICATE = MANIFEST.gates.find((g) => g.point === 'discuss:pre').check.predicate;
 const servers = {};
 
+// The rendered hook is the shipped discuss:pre gate (round-9 WR-01).
+function isShippedGate(x) {
+  return Boolean(
+    x && x.kind === 'gate' && x.blocking === true && x.onError === 'halt' && x.check && x.check.predicate &&
+      x.check.predicate.kind === PREDICATE.kind && x.check.predicate.command === PREDICATE.command,
+  );
+}
+
 before(async () => {
   servers.ok = await startFakeApi({ mode: 'ok' });
 });
@@ -418,7 +426,9 @@ function assertDoctorConsistent(d, h, project, { stray, loadedScope } = {}) {
   } catch {
     /* no config: disabled */
   }
-  const gateRendered = env.memantoHooks(env.renderHooks('discuss:pre', { cwd: project, home: h })).some((x) => x.kind === 'gate');
+  // Round-9 WR-01: the gate counts only when it is the shipped one: blocking,
+  // onError halt and the exact predicate of this repository's capability.json.
+  const gateRendered = env.memantoHooks(env.renderHooks('discuss:pre', { cwd: project, home: h })).some(isShippedGate);
   assertConsistent(
     ['loaded', 'consent', 'duplicate-install', 'gate-bundle'].map((id) => d.check(id)),
     {
@@ -674,10 +684,17 @@ for (const mode of Object.keys(R8)) {
       // The doctor's own manifest declares the gate, so discuss:pre is always rendered.
       const rd = d.check('render:discuss:pre');
       assert.equal(rd.status, mode === 'twoinvalid' ? 'ok' : 'error', JSON.stringify(rd));
+      // Round-9 IN-03: no load error was reported, so the fix is the reinstall of the loaded copy.
+      if (mode !== 'twoinvalid') {
+        assert.ok(!/load error/.test(rd.fix), rd.fix);
+        assert.ok(!/memanto\.enabled/.test(rd.fix), rd.fix);
+        assert.ok(rd.fix.includes(`reinstall the global copy at ${globalBundle(h)} in place at this release`), rd.fix);
+        for (const r of [loaded, gb]) assert.ok(!/memanto\.enabled/.test(r.fix), `${r.id}: ${r.fix}`);
+      }
     }
     if (mode === 'gnogate') {
       assert.ok(loaded.message.includes('declares no discuss:pre gate'), loaded.message);
-      assert.ok(loaded.fix.includes('reinstall the global copy in place'), loaded.fix);
+      assert.ok(loaded.fix.includes(`reinstall the global copy at ${globalBundle(h)} in place at this release`), loaded.fix);
     }
     if (mode === 'twonogate') {
       assert.ok(d.check('duplicate-install').message.includes('gsd-core keeps the global one, which renders no memanto gate'), d.check('duplicate-install').message);
@@ -708,6 +725,72 @@ for (const mode of Object.keys(R8)) {
     }
   });
 }
+
+// Round-9 WR-01 (reviewer's r9h.cjs gexit0 and gnonblock, with the fake API
+// instead of the live /health): the installed global gate renders, but it is
+// not the shipped gate. Doctor must not call it loaded or enforced.
+const R9H = {
+  gexit0: { edit: (m) => (m.gates[0].check.predicate.command = 'exit 0'), field: 'command' },
+  gnonblock: {
+    edit: (m) => {
+      m.gates[0].blocking = false;
+      m.gates[0].onError = 'skip';
+    },
+    field: 'blocking, onError',
+  },
+  // One trailing space: the command is compared exactly.
+  gspace: { edit: (m) => (m.gates[0].check.predicate.command = `${PREDICATE.command} `), field: 'command' },
+};
+
+for (const [mode, { edit, field }] of Object.entries(R9H)) {
+  test(`round-9 repro ${mode}: a rendered memanto gate that is not the shipped one is an error in loaded, render and gate-bundle`, () => {
+    const h = env.tmpDir('memanto-home-');
+    const project = env.makeProject({
+      config: { memanto: { enabled: true, agent_id: 'r9-agent', backend_url: servers.ok.url, api_url: servers.ok.url } },
+      phaseDirs: ['01-test'],
+    });
+    env.installBundle({ home: h });
+    editGlobalManifest(h, edit);
+    const hooks = env.memantoHooks(env.renderHooks('discuss:pre', { cwd: project, home: h }));
+    assert.equal(hooks.length, 1, 'the edited gate no longer renders');
+    assert.equal(isShippedGate(hooks[0]), false);
+    // Doctor from a clean bundle, and (as r9h.cjs runs it) from the edited
+    // global bundle itself, whose own capability.json carries the edit.
+    for (const bundle of [env.stageBundle(), globalBundle(h)]) {
+      const d = doctor(project, h, bundle);
+      assert.equal(d.status, 1, `${bundle}: ${JSON.stringify(d.rep)}`);
+      const rd = d.check('render:discuss:pre');
+      assert.equal(rd.status, 'error', JSON.stringify(rd));
+      assert.ok(rd.message.includes(`the installed memanto gate at discuss:pre does not match this release: ${field}`), rd.message);
+      assert.ok(rd.fix.includes('capability install npm:@taoc/gsd-memanto@'), rd.fix);
+      for (const id of ['loaded', 'gate-bundle']) {
+        const r = d.check(id);
+        assert.equal(r.status, 'error', JSON.stringify(r));
+        assert.ok(r.message.includes(`does not match this release: ${field}`), `${id}: ${r.message}`);
+        assert.ok(r.fix.includes('reinstall the global copy') && r.fix.includes('in place'), `${id}: ${r.fix}`);
+      }
+      assertDoctorConsistent(d, h, project, { stray: null, loadedScope: 'global' });
+    }
+  });
+}
+
+test('round-9 WR-01: memanto.cjs pins the sha256 of the shipped discuss:pre predicate command', () => {
+  const memanto = require('../memanto.cjs');
+  const sha = require('node:crypto').createHash('sha256').update(PREDICATE.command, 'utf8').digest('hex');
+  assert.equal(memanto.SHIPPED_GATE_COMMAND_SHA256, sha, 'capability.json changed the predicate: update SHIPPED_GATE_COMMAND_SHA256 in memanto.cjs');
+});
+
+test('round-9 WR-01: the shipped gate rendered from a clean global install is ok in loaded, render and gate-bundle', () => {
+  const h = env.tmpDir('memanto-home-');
+  const project = env.makeProject({
+    config: { memanto: { enabled: true, agent_id: 'r9-agent', backend_url: servers.ok.url, api_url: servers.ok.url } },
+    phaseDirs: ['01-test'],
+  });
+  env.installBundle({ home: h });
+  const d = doctor(project, h, env.stageBundle());
+  for (const id of ['loaded', 'render:discuss:pre', 'gate-bundle']) assert.equal(d.check(id).status, 'ok', JSON.stringify(d.check(id)));
+  assertDoctorConsistent(d, h, project, { stray: null, loadedScope: 'global' });
+});
 
 test('a global install is still preferred over a project install, as gsd-core does', () => {
   const h = env.tmpDir('memanto-home-');
@@ -757,6 +840,30 @@ const MATRIX = [
   ['global manifest with another id', { global: { manifestId: 'other', entry: COMMITTED }, project: { entry: COMMITTED } }, null],
   ['project entry missing files', { project: { entry: { ...COMMITTED, files: undefined } } }, null],
 ];
+
+// Round-9 IN-02: the loader (capability-loader.cjs ledgerOverlayIds) treats an
+// entry as pending only when _pending is truthy; a present but falsy _pending
+// is neither pending nor committed.
+test('ledgerState: _pending counts only when truthy, as in the loader', () => {
+  const { ledgerState, isInstalledBundle } = require('../lib/gate-bundle.cjs');
+  const cases = [
+    [{ op: 'install' }, 'pending'],
+    [true, 'pending'],
+    [null, 'none'],
+    [false, 'none'],
+    [0, 'none'],
+    ['', 'none'],
+  ];
+  for (const [pending, want] of cases) {
+    const root = env.tmpDir('memanto-led-');
+    fixtureScope(root, { entry: { ...COMMITTED, _pending: pending } });
+    assert.equal(ledgerState(root), want, JSON.stringify(pending));
+    assert.equal(isInstalledBundle(root), false, JSON.stringify(pending));
+  }
+  const root = env.tmpDir('memanto-led-');
+  fixtureScope(root, { entry: COMMITTED });
+  assert.equal(ledgerState(root), 'committed');
+});
 
 for (const [label, layout, expected] of MATRIX) {
   test(`predicate and resolveGateBundle agree: ${label}`, () => {

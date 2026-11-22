@@ -322,13 +322,18 @@ test('no reachable gsd-tools: gsd-core-located is an error and config and gate c
   assert.equal(rec(rep, 'api-health').status, 'ok');
 });
 
-test('memanto.enabled not true: enabled warns and the loaded, render and gate checks are skipped', () => {
+test('memanto.enabled not true: enabled and loaded warn, and the render and gate checks are skipped', () => {
   const project = env.makeProject({ config: { memanto: { enabled: false } } });
   const res = viaGsd(project, { raw: true });
   const rep = report(res);
   assert.ok(rec(rep, 'enabled'), res.stdout);
   assert.equal(rec(rep, 'enabled').status, 'warn');
-  for (const id of ['loaded', 'render:discuss:pre', 'agent-id']) assert.equal(rec(rep, id), undefined, id);
+  // Round-9 IN-01: the README's loaded warn for a disabled project.
+  const loaded = rec(rep, 'loaded');
+  assert.ok(loaded, res.stdout);
+  assert.equal(loaded.status, 'warn', JSON.stringify(loaded));
+  assert.ok(loaded.message.startsWith('memanto.enabled is not true, so gsd-core loads no memanto hook'), loaded.message);
+  for (const id of ['render:discuss:pre', 'agent-id']) assert.equal(rec(rep, id), undefined, id);
 });
 
 // --- IN-06: probe records are validated; an unknown status counts as an error ---

@@ -130,6 +130,7 @@ const REQUIRED = [
   'lib/gsd-host.cjs',
   'lib/gate-bundle.cjs',
   'lib/install-state.cjs',
+  'lib/safe-read.cjs',
 ];
 
 test('npm pack --dry-run lists only whitelisted paths and every required file', () => {
