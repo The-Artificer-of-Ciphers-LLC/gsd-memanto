@@ -9,17 +9,17 @@ Requirements for the initial release. Each maps to a roadmap phase.
 
 ### Install & Manifest
 
-- [ ] **INST-01**: Owner can install the capability globally (`$GSD_HOME/.gsd/capabilities/memanto`) through gsd-core's third-party install and consent flow, without editing any gsd-core file
-- [ ] **INST-02**: The installed manifest (`capability.json`, `engines.gsd >=1.20.1 <2.0.0`) loads through gsd-core's real loader with zero overlay warnings or diagnostics
-- [ ] **INST-03**: Every declared gate, step and contribution sits at a (point, kind) pair the host actually dispatches on gsd-core 1.20.1 (no `execute:pre`; no gates at `verify:post`, `ship:post` or `execute:wave:pre`), verified by a dispatch test
-- [ ] **INST-04**: The manifest avoids the loader traps that skip a capability: `MEMANTO-RECALL.md` instead of `MEMORY-RECALL.md`, `consumes` only host artifacts (CONTEXT/PLAN/SUMMARY/UAT), valid `into` roles, `when` only on the capability's own boolean keys, no reserved `gsd-` prefixes
-- [ ] **INST-05**: The bundle is zero-dependency Node CJS with a synchronous `memanto` command family, keeps runtime state outside the bundle, and ships as a minimal package (files whitelist)
+- [x] **INST-01**: Owner can install the capability globally (`$GSD_HOME/.gsd/capabilities/memanto`) through gsd-core's third-party install and consent flow, without editing any gsd-core file
+- [x] **INST-02**: The installed manifest (`capability.json`, `engines.gsd >=1.20.1 <2.0.0`) loads through gsd-core's real loader with zero overlay warnings or diagnostics
+- [x] **INST-03**: Every declared gate, step and contribution sits at a (point, kind) pair the host actually dispatches on gsd-core 1.20.1 (no `execute:pre`; no gates at `verify:post`, `ship:post` or `execute:wave:pre`), verified by a dispatch test
+- [x] **INST-04**: The manifest avoids the loader traps that skip a capability: `MEMANTO-RECALL.md` instead of `MEMORY-RECALL.md`, `consumes` only host artifacts (CONTEXT/PLAN/SUMMARY/UAT), valid `into` roles, `when` only on the capability's own boolean keys, no reserved `gsd-` prefixes
+- [x] **INST-05**: The bundle is zero-dependency Node CJS with a synchronous `memanto` command family, keeps runtime state outside the bundle, and ships as a minimal package (files whitelist)
 
 ### Configuration & Connectivity
 
-- [ ] **CONF-01**: Owner enables the capability per project with `memanto.enabled` (the activationKey); when it is false, no Memanto hook runs
+- [x] **CONF-01**: Owner enables the capability per project with `memanto.enabled` (the activationKey); when it is false, no Memanto hook runs
 - [ ] **CONF-02**: Owner sets `memanto.agent_id` explicitly per project; it defaults to `""`, and an empty or unknown id blocks with an actionable message (no implicit agent; `memanto-dev` is never a shipped default)
-- [ ] **CONF-03**: Owner configures the pre-running Memanto backend endpoint (on-prem host:port such as `plex2.nomorestars.com:8080`, or cloud) and the Memanto REST API URL; the capability never starts, stops or reconfigures either one
+- [x] **CONF-03**: Owner configures the pre-running Memanto backend endpoint (on-prem host:port such as `plex2.nomorestars.com:8080`, or cloud) and the Memanto REST API URL; the capability never starts, stops or reconfigures either one
 - [ ] **CONF-04**: Preflight checks that both endpoints' `/health` respond OK, that the configured agent exists, and that a canary write-and-read round-trip lands in the configured agent's namespace; any failure blocks
 - [ ] **CONF-05**: Per-feature toggles (recall, temporal, answer, bootstrap, wave recall, uploads, daily summary, export) are single boolean config keys the owner can turn off without disabling the capability
 - [ ] **CONF-06**: The capability works with any Memanto backend (on-prem or cloud) without backend-specific code paths beyond configuration
@@ -36,10 +36,10 @@ Requirements for the initial release. Each maps to a roadmap phase.
 
 - [ ] **GATE-01**: Blocking gates (`command-exit-zero`, `blocking: true`, `onError: halt`) run at every gate-capable point the capability uses (discuss:pre/post, plan:pre/post, execute:wave:post, execute:post, verify:pre, ship:pre) and stop the workflow on any Memanto failure
 - [ ] **GATE-02**: Operations at step-only points (`verify:post`, `ship:post`, `execute:wave:pre`) record pending/ok/failed in an append-only local ledger; the next gate refuses to pass until failed operations have been retried successfully
-- [ ] **GATE-03**: Every gate refuses to pass while `mempalace.enabled` is true (MemPalace mutual exclusion), with a message naming both capabilities
+- [x] **GATE-03**: Every gate refuses to pass while `mempalace.enabled` is true (MemPalace mutual exclusion), with a message naming both capabilities
 - [ ] **GATE-04**: Each gate failure prints a distinct, actionable message (which check failed, what the owner should do)
 - [ ] **GATE-05**: `memanto.enabled=false` is the single documented break-glass; there is no other bypass
-- [ ] **GATE-06**: The doctor command detects the fail-open cases (enabled in config but not loaded, not consented, engines mismatch, not rendering at a point) and reports them as errors
+- [x] **GATE-06**: The doctor command detects the fail-open cases (enabled in config but not loaded, not consented, engines mismatch, not rendering at a point) and reports them as errors
 
 ### Recall
 
@@ -93,8 +93,8 @@ Requirements for the initial release. Each maps to a roadmap phase.
 
 ### Testing & Delivery
 
-- [ ] **TEST-01**: Automated `node:test` suite validates the manifest through gsd-core's real validator and loader on a temporary `GSD_HOME`, and renders hooks through the real `loop render-hooks`
-- [ ] **TEST-02**: Gates, commands and adapter run against a stubbed Memanto (fake CLI on PATH, fake REST server)
+- [x] **TEST-01**: Automated `node:test` suite validates the manifest through gsd-core's real validator and loader on a temporary `GSD_HOME`, and renders hooks through the real `loop render-hooks`
+- [x] **TEST-02**: Gates, commands and adapter run against a stubbed Memanto (fake CLI on PATH, fake REST server)
 - [ ] **TEST-03**: Fault-injection tests cover backend down, REST API down, CLI missing, wrong active agent, expired session, unknown agent id, MemPalace enabled, engines mismatch, consent removed, and a seeded secret
 - [ ] **TEST-04**: An opt-in live suite (`MEMANTO_LIVE=1`, agent from env only) exercises recall, capture, upload, conflicts and summary against the real servers
 - [ ] **TEST-05**: A full discuss → plan → execute → verify → ship cycle in a test project against the dev agent leaves the expected memories, uploads, summaries and ledger entries, and a second run creates no duplicates
@@ -131,14 +131,14 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| INST-01 | Phase 1 | Pending |
-| INST-02 | Phase 1 | Pending |
-| INST-03 | Phase 1 | Pending |
-| INST-04 | Phase 1 | Pending |
-| INST-05 | Phase 1 | Pending |
-| CONF-01 | Phase 1 | Pending |
-| CONF-02 | Phase 1 | Pending |
-| CONF-03 | Phase 1 | Pending |
+| INST-01 | Phase 1 | Complete |
+| INST-02 | Phase 1 | Complete |
+| INST-03 | Phase 1 | Complete |
+| INST-04 | Phase 1 | Complete |
+| INST-05 | Phase 1 | Complete |
+| CONF-01 | Phase 1 | Complete |
+| CONF-02 | Phase 1 (empty id), Phase 2 (unknown id) | Partial |
+| CONF-03 | Phase 1 | Complete |
 | CONF-04 | Phase 2 | Pending |
 | CONF-05 | Phase 6 | Pending |
 | CONF-06 | Phase 7 | Pending |
@@ -149,10 +149,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SESS-05 | Phase 2 | Pending |
 | GATE-01 | Phase 2 | Pending |
 | GATE-02 | Phase 5 | Pending |
-| GATE-03 | Phase 1 | Pending |
+| GATE-03 | Phase 1 | Complete |
 | GATE-04 | Phase 2 | Pending |
 | GATE-05 | Phase 2 | Pending |
-| GATE-06 | Phase 1 | Pending |
+| GATE-06 | Phase 1 | Complete |
 | RECL-01 | Phase 3 | Pending |
 | RECL-02 | Phase 6 | Pending |
 | RECL-03 | Phase 3 | Pending |
@@ -185,8 +185,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CMD-07 | Phase 6 | Pending |
 | COVR-01 | Phase 7 | Pending |
 | COVR-02 | Phase 7 | Pending |
-| TEST-01 | Phase 1 | Pending |
-| TEST-02 | Phase 1 | Pending |
+| TEST-01 | Phase 1 | Complete |
+| TEST-02 | Phase 1 | Complete |
 | TEST-03 | Phase 7 | Pending |
 | TEST-04 | Phase 7 | Pending |
 | TEST-05 | Phase 7 | Pending |
