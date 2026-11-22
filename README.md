@@ -103,7 +103,12 @@ Checks, in the order they are reported:
 
 If the gate itself fails unexpectedly, it blocks with `[gate-internal]`. The gate fails closed: it does not pass on an error.
 
-The gate runs `scripts/gate.cjs` only from an installed bundle. An installed bundle is a `.gsd/capabilities/memanto` directory whose `capability.json` has the id `memanto` and whose scope ledger (`.gsd-capabilities.json` in `${GSD_HOME:-$HOME}` or in the project root) holds a committed `memanto` entry. gsd-core keeps the global copy when both scopes have one, so the gate tries the global bundle first and then the project bundle. A directory that only holds a stray or planted `scripts/gate.cjs` is never run. If neither scope holds an installed bundle, the gate blocks with `[gate-bundle]`.
+The gate runs `scripts/gate.cjs` only from an installed bundle. An installed bundle is a `.gsd/capabilities/memanto` directory whose `capability.json` has the id `memanto` and whose scope ledger (`.gsd-capabilities.json` in `${GSD_HOME:-$HOME}` or in the project root) holds a committed `memanto` entry. The gate picks the bundle the same way gsd-core does:
+
+- If `${GSD_HOME:-$HOME}/.gsd/capabilities/memanto/capability.json` exists, gsd-core loads that global copy, even when no ledger lists it. The gate then runs the global bundle when it is installed and blocks with `[gate-bundle]` when it is not. It never falls back to a project copy in this case, because a project ledger and bundle can be committed to the repository.
+- If no global `capability.json` exists, the gate runs the project bundle when it is installed and blocks with `[gate-bundle]` when it is not. gsd-core activates a project bundle only when this machine holds a consent record for it.
+
+A directory that only holds a stray or planted `scripts/gate.cjs` is never run.
 
 Example:
 

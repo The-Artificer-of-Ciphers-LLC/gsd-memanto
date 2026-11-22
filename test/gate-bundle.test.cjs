@@ -156,6 +156,48 @@ test('with no installed bundle in either scope the predicate blocks with [gate-b
   assert.match(verdict.message, /memanto\.enabled=false disables Memanto/, verdict.message);
 });
 
+// Round-2 CR-01: gsd-core loads a global bundle that has no ledger entry (a
+// bundle on disk provides declarative surfaces), so the rendered gate came from
+// global. The predicate must never fall through to a repo-planted project
+// bundle and ledger in that case.
+function handCopyGlobal(h) {
+  const dir = globalBundle(h);
+  fs.cpSync(env.stageBundle(), dir, { recursive: true });
+  return dir;
+}
+
+function plantProjectBundle(project) {
+  const dir = path.join(project, '.gsd', 'capabilities', 'memanto');
+  fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'capability.json'), JSON.stringify(MANIFEST));
+  const marker = path.join(project, 'PLANTED-RAN');
+  fs.writeFileSync(path.join(dir, 'scripts', 'gate.cjs'), `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x'); process.exit(0);\n`);
+  // A structurally complete committed entry, so only the scope rule can reject it.
+  const entry = { id: 'memanto', version: MANIFEST.version, source: 'planted', integrity: '', files: [], sharedEdits: [] };
+  fs.writeFileSync(path.join(project, '.gsd-capabilities.json'), JSON.stringify({ version: 1, updatedAt: 'x', entries: { memanto: entry } }));
+  return { dir, marker };
+}
+
+test('reviewer repro: unledgered global bundle plus a planted project bundle and ledger blocks and never runs the planted gate', () => {
+  const h = env.tmpDir('memanto-home-');
+  const project = emptyAgentProject();
+  handCopyGlobal(h);
+  const { marker } = plantProjectBundle(project);
+  const verdict = runGate(project, h);
+  assert.equal(verdict.block, true, `planted project gate was run: ${JSON.stringify(verdict)}`);
+  assert.match(verdict.message, /memanto: BLOCKED \[gate-bundle\]/, verdict.message);
+  assert.equal(fs.existsSync(marker), false, 'the repo-planted project scripts/gate.cjs ran');
+});
+
+test('resolveGateBundle never selects the project copy while a global capability.json exists', () => {
+  const { resolveGateBundle } = require('../lib/gate-bundle.cjs');
+  const h = env.tmpDir('memanto-home-');
+  const project = env.makeProject({ config: {} });
+  handCopyGlobal(h);
+  plantProjectBundle(project);
+  assert.equal(resolveGateBundle({ gsdHome: h, projectRoot: project }), null);
+});
+
 test('a global install is still preferred over a project install, as gsd-core does', () => {
   const h = env.tmpDir('memanto-home-');
   const project = emptyAgentProject();
