@@ -84,6 +84,33 @@ test('redactUrl strips userinfo and caps to 160 characters', () => {
   assert.ok(!long.includes('user:pass'));
 });
 
+// CR-02: a password with an unescaped reserved character is the usual reason a
+// URL does not parse, so the unparseable path must strip userinfo too.
+const UNPARSEABLE_USERINFO = [
+  ['/', 'http://user:p/ss@host:8000', 'p/ss'],
+  ['#', 'http://user:p#w@host', 'p#w'],
+  ['?', 'http://user:p?w@host:8000/x', 'p?w'],
+  ['@', 'http://user:p@ss@host:99999', 'p@ss'],
+  ['a space', 'http://user:p w@host:99999', 'p w'],
+];
+
+for (const [label, value, secret] of UNPARSEABLE_USERINFO) {
+  test(`redactUrl strips userinfo from an unparseable URL whose password holds ${label}`, () => {
+    assert.throws(() => new URL(value), 'the case must not parse as a URL');
+    const out = health().redactUrl(value);
+    assert.ok(!out.includes(secret), `${JSON.stringify(value)} -> ${JSON.stringify(out)}`);
+    assert.ok(!out.includes('user') && !out.includes('@'), `${JSON.stringify(value)} -> ${JSON.stringify(out)}`);
+  });
+
+  test(`the gate never prints the password of an unparseable backend_url holding ${label}`, () => {
+    const r = runGate({ backend_url: value, api_url: servers.ok.url });
+    assert.equal(r.block, true, r.message);
+    assert.deepEqual(r.ids, ['backend-url'], r.message);
+    assert.ok(!r.message.includes(secret), `password leaked: ${r.message}`);
+    assert.ok(!r.message.includes('user:') && !r.message.includes('@'), `userinfo leaked: ${r.message}`);
+  });
+}
+
 test('redactUrl removes control characters so a value cannot forge extra gate lines', () => {
   const { redactUrl } = health();
   const out = redactUrl('not a url\nmemanto: BLOCKED [fake] x -> y\r');
