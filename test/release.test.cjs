@@ -64,6 +64,13 @@ test('.npmrc pins exact versions (save-exact=true)', () => {
   assert.ok(lines.includes('save-exact=true'), '.npmrc must contain save-exact=true');
 });
 
+// IN-01: a files entry that does not exist would silently ship whatever later
+// appears at that path, changing the bundle hash.
+test('every package.json files entry exists in the repo', () => {
+  const missing = readJson('package.json').files.filter((f) => !fs.existsSync(path.join(ROOT, f)));
+  assert.deepEqual(missing, [], 'package.json files lists paths that do not exist');
+});
+
 // --- WR-04: the release job keeps the write token off disk and pins npm ---
 
 function workflowSteps(text) {

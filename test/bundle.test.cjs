@@ -117,7 +117,7 @@ test('route() returns a value that is not thenable', () => {
 
 // --- 3. pack list equals the whitelist ---
 
-const ALLOWED = [/^package\.json$/, /^capability\.json$/, /^memanto\.cjs$/, /^lib\//, /^scripts\//, /^fragments\//, /^README\.md$/, /^LICENSE$/];
+const ALLOWED = [/^package\.json$/, /^capability\.json$/, /^memanto\.cjs$/, /^lib\//, /^scripts\//, /^README\.md$/, /^LICENSE$/];
 const REQUIRED = [
   'capability.json',
   'memanto.cjs',
