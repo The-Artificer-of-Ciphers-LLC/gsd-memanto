@@ -1,21 +1,21 @@
 ---
 phase: 01-walking-skeleton
-fixed_at: 2026-11-22T03:11:38Z
+fixed_at: 2026-11-22T03:21:45Z
 review_path: .planning/phases/01-walking-skeleton/01-REVIEW.md
-iteration: 5
-findings_in_scope: 3
-fixed: 3
+iteration: 6
+findings_in_scope: 2
+fixed: 2
 skipped: 0
 status: all_fixed
 ---
 
-# Phase 1: Code Review Fix Report (rounds 4 and 5)
+# Phase 1: Code Review Fix Report (rounds 4 to 6)
 
-The frontmatter counts are for round 5 (the current 01-REVIEW.md): 3 findings, all fixed. See "Round 5" at the end. The round-4 report and its owner follow-ups are kept below unchanged.
+The frontmatter counts are for round 6 (the current 01-REVIEW.md): 2 findings, both fixed. See "Round 6" at the end. The round-4 report, its owner follow-ups and the round-5 section are kept below unchanged.
 
-**Fixed at:** 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5)
-**Source review:** .planning/phases/01-walking-skeleton/01-REVIEW.md (round 4, re-review of the round-3 fixes; now round 5, re-review of the round-4 fixes and owner follow-ups)
-**Iteration:** 4, then 5
+**Fixed at:** 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5), 2026-11-22T03:21:45Z (round 6)
+**Source review:** .planning/phases/01-walking-skeleton/01-REVIEW.md (round 4, re-review of the round-3 fixes; round 5, re-review of the round-4 fixes and owner follow-ups; now round 6, re-review of the round-5 fixes)
+**Iteration:** 4, then 5, then 6
 
 Earlier rounds:
 - Round 1 (14 findings, all fixed): commits `851e2c2..d684020`.
@@ -140,8 +140,46 @@ Each failure message names `memanto.cjs loadedCopy`. Results:
 - The README `backend-health` and `api-health` rows and the sample BLOCKED line show the quoted form.
 - The longest gate line still fits `LINE_MAX`.
 
+## Round 6
+
+**Source review:** `01-REVIEW.md` round 6 (WR-01, IN-01; no criticals). The branch was first fast-forwarded to main (`415a92e`). Owner rule: fix every finding. Each fix was written test-first: the new tests failed before the code change and passed after it.
+
+**Summary:** 2 in scope, 2 fixed, 0 skipped. Verification ran in this agent worktree (`.claude/worktrees/agent-a4925451f902d53d9`). `npm test`: 426 tests, 425 pass, 0 fail, 1 skipped. Every host run used a temp `GSD_HOME`. No Memanto server was contacted. Versions stay `0.1.0`.
+
+| Finding | Commit | Files | Status |
+|---------|--------|-------|--------|
+| WR-01 | `130d4fd` | `memanto.cjs`, `test/gate-bundle.test.cjs` | fixed: requires human verification (logic) |
+| IN-01 | `8b1ccc7` | `memanto.cjs`, `test/gate-bundle.test.cjs` | fixed |
+
+### WR-01: one skipped copy was reported as "neither", with a fix that contradicted the engines record
+
+**Commit:** `130d4fd`
+**Applied fix:** `neitherLoadedText` and `NEITHER_FIX` are replaced by `notLoadedText(failures, scopeDirs, roots)` and `notLoadedFix(failures)`, which `loaded` and `gate-bundle` both use.
+
+The wording follows the manifests on disk:
+- Both a global and a project `capability.json`: "gsd-core loaded neither memanto copy (<reasons>)".
+- One manifest: "gsd-core did not load the <scope> memanto copy at <dir> (<reasons>)".
+- No reason printed: the text ends "and printed no load error".
+
+The fix follows the reasons:
+- Every reason matches `^(owns |id collides)` (an ownership clash): the clash fix, "reinstalling or removing a memanto copy does not clear it".
+- No reason, or any `engines.gsd`, validation, manifest or fragment failure: "fix the load error the loaded, engines and render checks report, or reinstall: gsd-tools capability install ...". That is the cure the `engines` and `render:*` records give.
+- A mix of a clash and another reason: the reinstall fix, plus a note that a reinstall does not clear the clash.
+
+The reviewer's `single.cjs` modes `gengines`, `gsquat` and `psquat` are now tests in `test/gate-bundle.test.cjs`. They assert:
+- the single-copy wording, and that no record says "neither";
+- the clash fix for the two squats;
+- for `gengines`, a reinstall fix that points at the engines check and never says "does not clear", next to the engines record's "install a memanto release" fix.
+
+The two-copy squat test is kept, and it now also asserts the clash fix. The reviewer's script run against this worktree gives the expected text for all four modes (including `pengines`), and doctor exits 1 in every run.
+
+### IN-01: loaded and gate-bundle disagreed when no hook rendered and no reason was printed
+
+**Commit:** `8b1ccc7`
+**Applied fix:** `gateBundleCheck` now takes the render evidence itself (`rendered`: true, false or null) instead of a flag that `collectChecks` had already filtered on the presence of reasons. `rendered === false` is an error, whether or not gsd-core printed a reason, and `failures` only feed the message. `collectChecks` passes `rendered`, and `duplicate-install` gets `rendered === false`. The `ok` record "the discuss:pre gate runs the installed bundle gsd-core loads" is now reachable only when a memanto hook rendered or no render ran. `loadedCheck` and `gateBundleCheck` are exported for a new unit test. With renders succeeding, no hook and no reason, that test asserts that both records are errors, that neither claims a load, and that both name "gsd-core did not load the global memanto copy at <dir> and printed no load error". It also asserts that `rendered: true` and `null` still give `ok`.
+
 ---
 
-_Fixed: 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5)_
+_Fixed: 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5), 2026-11-22T03:21:45Z (round 6)_
 _Fixer: Claude (gsd-code-fixer)_
-_Iteration: 5_
+_Iteration: 6_
