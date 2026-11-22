@@ -142,7 +142,11 @@ const REJECTED = [
   ['http://u:p%FF@host', ['p%FF']],
   ['http://h:99999', ['99999']],
   ['http://0x7f.1:8000', ['0x7f']],
-  ['HTTP://memanto.internal:8000', ['memanto.internal']],
+  // Owner follow-up: an upper-case scheme is accepted, but the rest of the rule is unchanged.
+  ['HTTP://0x7f.1:8000', ['0x7f']],
+  ['HTTPS://alice:s3c:ret@memanto.internal:8000', [...SECRETS, 's3c:ret']],
+  ['Http://alice:s3cret%40memanto.internal:8000', SECRETS],
+  ['FTP://alice:s3cret@memanto.internal:21', SECRETS],
   ['file:///etc/passwd', ['passwd']],
 ];
 
@@ -157,7 +161,13 @@ const ACCEPTED = [
   ['http://@host:8000/api', 'http://host:8000/<base path>'],
   ['http://u:@h:1', 'http://h:1'],
   ['http://Memanto.Example:8080/a/b/', 'http://memanto.example:8080/<base path>'],
+  // Owner follow-up: the scheme is matched case-insensitively and shown in lower case.
+  ['HTTP://localhost:8000', 'http://localhost:8000'],
+  ['HTTPS://u:p%40ss@h:1/base', 'https://h:1/<base path>'],
+  ['Https://h:1', 'https://h:1'],
 ];
+// Substrings of an accepted value that are never printed (userinfo and base path).
+const ACCEPTED_SECRETS = ['u:', 'p%40ss', 'p@ss', '/base', '/api', '/a/b', 'HTTP', 'Https'];
 
 // Round-4 IN-02: one message for every rejected value. It states the rule, so a
 // credential-free URL with an '@' in its path is told to remove it, and it fits
@@ -205,8 +215,30 @@ for (const [value, shown] of ACCEPTED) {
     const v = health().validateEndpointUrl(value);
     assert.equal(v.ok, true, JSON.stringify(v));
     assert.equal(displayBase(value), shown);
+    for (const secret of ACCEPTED_SECRETS) assert.ok(!displayBase(value).includes(secret), `${value} -> ${displayBase(value)}`);
   });
 }
+
+// Owner follow-up: an upper-case scheme is probed and shown in lower case, and
+// its userinfo and base path never reach the health line or the curl hint.
+test('an upper-case scheme with userinfo and a base path is probed at the accepted host and shown in lower case only', () => {
+  const base = servers.closed.url.replace('http://', 'HTTP://alice:s3cret@');
+  const r = runGate({ backend_url: `${base}/tenant-42`, api_url: servers.ok.url.replace('http://', 'HTTP://') });
+  assert.deepEqual(r.ids, ['backend-health'], r.message);
+  const line = lineFor(r, 'backend-health');
+  assert.ok(line.includes(`${servers.closed.url}/<base path>/health is not healthy (connection)`), line);
+  assert.ok(line.includes(`curl -fsS ${servers.closed.url}/<base path>/health`), line);
+  for (const secret of ['alice', 's3cret', 'tenant-42', 'HTTP']) assert.ok(!r.message.includes(secret), `leaked ${secret}: ${r.message}`);
+});
+
+test('checkHealth probes an upper-case-scheme URL with the decoded Basic header and the base path', async () => {
+  const before = servers.ok.requests.length;
+  const url = `${servers.ok.url.replace('http://', 'HTTP://u:p%40ss@')}/base`;
+  assert.deepEqual(await health().checkHealth(url), { ok: true });
+  const [req] = servers.ok.requests.slice(before);
+  assert.equal(req.url, '/base/health');
+  assert.equal(req.authorization, `Basic ${Buffer.from('u:p@ss').toString('base64')}`);
+});
 
 test('displayBase never prints userinfo or a base path', () => {
   const out = displayBase('https://alice:s3cret@memanto.internal:8443/tenant-42/v1');
