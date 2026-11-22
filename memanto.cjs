@@ -5,6 +5,7 @@
 // for the states in which gsd-core does not route the family (not consented,
 // outside engines.gsd, failed validation, not in a ledger).
 
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -261,11 +262,26 @@ function shippedGate() {
   return g && g.check && g.check.predicate ? g : null;
 }
 
+// The sha256 of the shipped predicate command. The own capability.json sits in
+// the same editable bundle as this file, so the command is also checked
+// against this constant: doctor run from a bundle whose capability.json was
+// edited still reports the edit. test/gate-bundle.test.cjs fails when
+// capability.json changes the command without updating this constant.
+const SHIPPED_GATE_COMMAND_SHA256 = 'ac9ed2a17ed50c29f6d759cdca8fabc455e0709b69b513dfac32cf85fd46bd06';
+const sha256 = (s) => crypto.createHash('sha256').update(String(s), 'utf8').digest('hex');
+
 function gateMismatch(h, shipped) {
   if (!isMemantoGate(h)) return ['kind'];
   const p = h.check && h.check.predicate ? h.check.predicate : {};
   const fields = [];
-  if (!shipped || p.kind !== 'command-exit-zero' || p.kind !== shipped.check.predicate.kind || p.command !== shipped.check.predicate.command) fields.push('command');
+  const commandOk =
+    shipped &&
+    p.kind === 'command-exit-zero' &&
+    p.kind === shipped.check.predicate.kind &&
+    typeof p.command === 'string' &&
+    p.command === shipped.check.predicate.command &&
+    sha256(p.command) === SHIPPED_GATE_COMMAND_SHA256;
+  if (!commandOk) fields.push('command');
   if (h.blocking !== true || (shipped && h.blocking !== shipped.blocking)) fields.push('blocking');
   if (h.onError !== 'halt' || (shipped && h.onError !== shipped.onError)) fields.push('onError');
   return fields;
@@ -596,6 +612,7 @@ module.exports = {
   PROBE_TIMEOUT_MS,
   LOOP_POINTS,
   pointsToRender,
+  SHIPPED_GATE_COMMAND_SHA256,
 };
 
 if (require.main === module) {

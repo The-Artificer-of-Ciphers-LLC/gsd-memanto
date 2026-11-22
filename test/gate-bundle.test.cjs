@@ -754,21 +754,31 @@ for (const [mode, { edit, field }] of Object.entries(R9H)) {
     const hooks = env.memantoHooks(env.renderHooks('discuss:pre', { cwd: project, home: h }));
     assert.equal(hooks.length, 1, 'the edited gate no longer renders');
     assert.equal(isShippedGate(hooks[0]), false);
-    const d = doctor(project, h, env.stageBundle());
-    assert.equal(d.status, 1, JSON.stringify(d.rep));
-    const rd = d.check('render:discuss:pre');
-    assert.equal(rd.status, 'error', JSON.stringify(rd));
-    assert.ok(rd.message.includes(`the installed memanto gate at discuss:pre does not match this release: ${field}`), rd.message);
-    assert.ok(rd.fix.includes('capability install npm:@taoc/gsd-memanto@'), rd.fix);
-    for (const id of ['loaded', 'gate-bundle']) {
-      const r = d.check(id);
-      assert.equal(r.status, 'error', JSON.stringify(r));
-      assert.ok(r.message.includes(`does not match this release: ${field}`), `${id}: ${r.message}`);
-      assert.ok(r.fix.includes('reinstall the global copy') && r.fix.includes('in place'), `${id}: ${r.fix}`);
+    // Doctor from a clean bundle, and (as r9h.cjs runs it) from the edited
+    // global bundle itself, whose own capability.json carries the edit.
+    for (const bundle of [env.stageBundle(), globalBundle(h)]) {
+      const d = doctor(project, h, bundle);
+      assert.equal(d.status, 1, `${bundle}: ${JSON.stringify(d.rep)}`);
+      const rd = d.check('render:discuss:pre');
+      assert.equal(rd.status, 'error', JSON.stringify(rd));
+      assert.ok(rd.message.includes(`the installed memanto gate at discuss:pre does not match this release: ${field}`), rd.message);
+      assert.ok(rd.fix.includes('capability install npm:@taoc/gsd-memanto@'), rd.fix);
+      for (const id of ['loaded', 'gate-bundle']) {
+        const r = d.check(id);
+        assert.equal(r.status, 'error', JSON.stringify(r));
+        assert.ok(r.message.includes(`does not match this release: ${field}`), `${id}: ${r.message}`);
+        assert.ok(r.fix.includes('reinstall the global copy') && r.fix.includes('in place'), `${id}: ${r.fix}`);
+      }
+      assertDoctorConsistent(d, h, project, { stray: null, loadedScope: 'global' });
     }
-    assertDoctorConsistent(d, h, project, { stray: null, loadedScope: 'global' });
   });
 }
+
+test('round-9 WR-01: memanto.cjs pins the sha256 of the shipped discuss:pre predicate command', () => {
+  const memanto = require('../memanto.cjs');
+  const sha = require('node:crypto').createHash('sha256').update(PREDICATE.command, 'utf8').digest('hex');
+  assert.equal(memanto.SHIPPED_GATE_COMMAND_SHA256, sha, 'capability.json changed the predicate: update SHIPPED_GATE_COMMAND_SHA256 in memanto.cjs');
+});
 
 test('round-9 WR-01: the shipped gate rendered from a clean global install is ok in loaded, render and gate-bundle', () => {
   const h = env.tmpDir('memanto-home-');
