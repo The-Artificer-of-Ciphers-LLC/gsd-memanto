@@ -1,125 +1,71 @@
 ---
 phase: 01-walking-skeleton
-fixed_at: 2026-11-22T01:24:13Z
+fixed_at: 2026-11-22T01:55:49Z
 review_path: .planning/phases/01-walking-skeleton/01-REVIEW.md
-iteration: 2
-findings_in_scope: 9
-fixed: 9
+iteration: 3
+findings_in_scope: 4
+fixed: 4
 skipped: 0
 status: all_fixed
 ---
 
-# Phase 1: Code Review Fix Report (round 2)
+# Phase 1: Code Review Fix Report (round 3)
 
-**Fixed at:** 2026-11-22T01:24:13Z
-**Source review:** .planning/phases/01-walking-skeleton/01-REVIEW.md (re-review after the round-1 fixes)
-**Iteration:** 2
+**Fixed at:** 2026-11-22T01:55:49Z
+**Source review:** .planning/phases/01-walking-skeleton/01-REVIEW.md (round 3, re-review of the round-2 fixes)
+**Iteration:** 3
 
-Round 1 (14 findings, all fixed) is commits `851e2c2..d684020`.
+Earlier rounds:
+- Round 1 (14 findings, all fixed): commits `851e2c2..d684020`.
+- Round 2 (9 findings, all fixed): commits `d189838..6243b0e`.
 
 **Summary:**
-- Findings in scope: 9 (owner decision: every finding, CR, WR and IN, no deferrals)
-- Fixed: 9
+- Findings in scope: 4 (owner decision: every finding, WR and IN, no deferrals, no skips)
+- Fixed: 4
 - Skipped: 0
-- Verification: run in the main checkout of this agent worktree (`.claude/worktrees/agent-ad14e8f87b9111845`), not a separate review-fix worktree. `npm test`: 273 tests, 272 pass, 0 fail, 1 skipped. `actionlint .github/workflows/publish.yml` is clean. Every host run used a temp `GSD_HOME`. No Memanto server was contacted, and the only network traffic went to local fake servers.
+- Every fix was written test-first: the new or changed tests failed before the code change and passed after it.
+- Verification: run in this agent worktree (`.claude/worktrees/agent-a1170882395c3330a`), not a separate review-fix worktree. `npm test`: 327 tests, 326 pass, 0 fail, 1 skipped. `actionlint .github/workflows/publish.yml` is clean. Every host run used a temp `GSD_HOME`. No Memanto server was contacted, and the only network traffic went to local fake servers and closed local ports. Versions stay `0.1.0`.
 
-## Round-2 fixes
+## Round-3 fixes
 
 | Finding | Status | Commit | Files |
 |---------|--------|--------|-------|
-| CR-01 | fixed: requires human verification | `d189838` | `capability.json`, `lib/gate-bundle.cjs`, `README.md`, `test/gate-bundle.test.cjs` |
-| CR-02 | fixed: requires human verification | `339e977` | `lib/health.cjs`, `lib/checks.cjs`, `README.md`, `test/health.test.cjs` |
-| WR-01 | fixed | `fcb271e` | `capability.json`, `README.md`, `test/gate-bundle.test.cjs` |
-| WR-02 | fixed | `bb0da46` | `.github/workflows/publish.yml`, `test/release.test.cjs` |
-| WR-03 | fixed: requires human verification | `527f262` | `memanto.cjs`, `README.md`, `test/gate-bundle.test.cjs` |
-| IN-01 | fixed | `7387695` | `memanto.cjs`, `test/doctor.test.cjs` |
-| IN-02 | fixed | `daf5019` | `tools/stage-bundle.cjs`, `test/stage-bundle.test.cjs` |
-| IN-03 | fixed | `820bbca` | `test/gate-bundle.test.cjs` |
-| IN-04 | fixed | `6243b0e` | `memanto.cjs`, `lib/gsd-host.cjs`, `test/gsd-host.test.cjs`, `test/gate-bundle.test.cjs` |
+| WR-01 | fixed: requires human verification | `ebb2d4c` | `lib/health.cjs`, `lib/checks.cjs`, `README.md`, `test/health.test.cjs`, `test/doctor.test.cjs` |
+| WR-02 | fixed | `e7857a4` | `.github/workflows/publish.yml`, `test/release.test.cjs` |
+| IN-01 | fixed: requires human verification | `8fe7dc3` | `lib/health.cjs`, `lib/checks.cjs`, `README.md`, `test/health.test.cjs` |
+| IN-02 | fixed: requires human verification | `76f329d` | `memanto.cjs`, `README.md`, `test/gate-bundle.test.cjs` |
 
 ## Fixed Issues
 
-### CR-01: The gate falls through to a repo-planted project bundle when the global bundle has no ledger entry
+### WR-01: A credential URL without an ASCII `@` is echoed verbatim, password included
 
-**Commit:** `d189838`
-**Applied fix:** The predicate and `resolveGateBundle` follow gsd-core's own selection. If `<GSD_HOME>/.gsd/capabilities/memanto/capability.json` exists, they run the global bundle only when it is installed and block with `[gate-bundle]` otherwise. They never fall back to the project copy in that case. The project copy is used only when no global `capability.json` exists and the project ledger holds a committed entry. The committed-entry check now also requires what gsd-core's `isValidLedgerEntry` requires: string `version`, `source` and `integrity`, `files` and `sharedEdits` arrays, and no own `_pending`. The reviewer's reproduction is now a regression test: a hand-copied global bundle, plus a planted project bundle and ledger whose `gate.cjs` writes a marker. It returns `block:true` with `[gate-bundle]`, and no marker file is created. The predicate is still POSIX sh and is now 1755 characters long.
+**Commit:** `ebb2d4c`
+**Applied fix:** One classifier, `classifyUrl` in `lib/health.cjs`, now drives both validation and display. It splits the value the way the WHATWG parser does: tabs and newlines are removed, slashes and backslashes after `scheme:` are skipped, and the authority ends at the first `/`, `\`, `?` or `#`. It then checks that split against `new URL`. Only a cleanly parsed `http`/`https` URL is echoed. A URL with userinfo is printed as `scheme://host:port/path`, with no userinfo, query or fragment. Any other value is printed as `<scheme>://<redacted>`, or `<redacted>` when it has no scheme. This covers `%40`, a full-width `＠` (U+FF20), a small `﹫` (U+FE6B) and their UTF-8 percent forms, no-slash `http:` forms, non-http schemes and scheme-less values. `displayBase` (the health line and the curl hint) calls the same function with `base: true`. The reviewer's reproduction is now a test in two places: through the real host gate for both `backend_url` and `api_url`, and through doctor text and `--raw` in both the `gsd_run` and the direct forms. README now says that the password-to-host separator must be a literal `@`, and that a literal `@` inside the password is written `%40`. It no longer tells users to percent-encode the separator. Behaviour change: an invalid value such as `localhost:8000` is now shown as `<redacted>`, and the scheme-less test was updated to match.
 
-### CR-02: Credential leak for passwords that start with port-like digits followed by `/`, `?` or `#`
+### WR-02: The release's git-config refusal check runs only after npm staging and never in dry-run
 
-**Commit:** `339e977`
-**Applied fix:** `redactUrl` echoes a value that contains `@` only when it is a well-formed `user:password@host` URL: it parses with a credential scheme, carries userinfo, and no `@` remains once that userinfo is removed. Any other value with `@` is printed as `<scheme>://<redacted>`, so nothing before its last `@` is ever echoed. `validateEndpointUrl` now rejects such values with the new reason `ambiguous-userinfo`. The gate therefore blocks on `backend-url`/`api-url` and never probes the misparsed host. The old probe sent `GET /x@host:8000/health` to host `u`, so the password went over the network as well. `displayBase` makes the redaction decision on the whole URL before it drops the fragment. Tests cover `http://u:12/x@host:8000`, `http://user:123#w@host` and a `?` variant in four ways: `redactUrl`, `validateEndpointUrl`, `displayBase` (the health line and the curl hint), and end to end through the host gate. Another test uses a misparsed URL that points at a live local fake server and proves the server receives no request. The new message fits the 250-character line cap.
+**Commit:** `e7857a4`
+**Applied fix:** `Refuse a git config that could redirect or capture the push credential` is now its own step, right after the release job's checkout. It has no `if:`, so it also runs in dry-run, and it holds no token. It sets `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1` and runs `git config --local --name-only --get-regexp '^(url|http|credential|include|includeif)\.'`, which prints key names only. The push step keeps a `--name-only` re-check. In `test/release.test.cjs`, the regex is read from the new step. The test asserts that the step comes right after checkout and before bump, stage, commit and push. It also asserts that the step has no `if:` and no token, that both checks use `--name-only`, that the regex matches the push re-check, and that no `--get-regexp` without `--name-only` remains. The hermetic run now plants a secret in every config value and asserts that the refusal names the key but never prints the value. The workflow name `publish.yml` and the `npm-publish` environment are unchanged. `actionlint` is clean.
 
-### WR-01: The `[gate-bundle]` block message prints the literal `${GSD_HOME:-$HOME}`
+### IN-01: `ambiguous-userinfo` blocks credential-free URLs that contain `@`, and its message says "malformed credentials"
 
-**Commit:** `fcb271e`
-**Applied fix:** Both `[gate-bundle]` lines print the expanded directories they checked. These are computed in the node program from `process.env.GSD_HOME || os.homedir()` and the project cwd, and sanitized like the `[gate-internal]` branch. The no-bundle line uses doctor's `reinstallFix()` wording: `gsd-tools capability install npm:@taoc/gsd-memanto@0.1.0 --yes (add --scope project inside a project for project scope)`. A test requires every reinstall hint in the predicate to name the manifest version. The WR-02 commit extends the release bump to rewrite that pin.
+**Commit:** `8fe7dc3`
+**Applied fix:** An `@` (or an `@` look-alike) after the authority is ambiguous only when the authority contains a `:`, because only then can a password run past an unencoded `/`, `\`, `?` or `#`. `http://host/a@b`, `http://host/?x=a@b`, `https://host/api#a@b` and `http://u@host/x@y` are accepted. `http://@host` is treated as an empty userinfo: it is accepted, shown as `http://host/`, and probed with no `Authorization` header (an end-to-end test checks this). These still block and are never probed: `http://u:12/x@host:8000`, the backslash form, `http://u:pw@host:8000/x@y`, and `http://u:12/x%40host:8000`. The message is now `<key> has an ambiguous '@' in URL: <scheme>://<redacted>`, with the fix hint `gsd_run config-set <key> <http(s)://[user:password@]host:port> (a literal '@' before the host; %40 inside the password)`. A test pins the full line and checks that it fits the 250-character cap. The reason id stays `ambiguous-userinfo`. README documents the rule and the new fix text.
 
-### WR-02: Release push credential reachable by code that ran during `npm test`
+### IN-02: The doctor `gate-bundle` message names the project copy as loaded when gsd-core loaded the hand-copied global copy
 
-**Commit:** `bb0da46`
-**Applied fix:**
-- `publish.yml` now has a `test` job that holds `contents: read` only, with no id-token and no environment. It runs the host install, `npm test` and `npm pack --dry-run --ignore-scripts`.
-- The `release` job (`needs: test`, environment `npm-publish`, file name unchanged) starts on a fresh runner and runs no repo code. `npm version` and `npm stage publish` use `--ignore-scripts`.
-- Commit and tag run with `core.hooksPath=/dev/null` and `--no-verify`, in a step with no `GH_TOKEN`.
-- A separate push step holds the token. It sets `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`, refuses when the local config has `url`, `http`, `credential` or `include*` keys, and pushes with `--no-verify` to `https://github.com/${GITHUB_REPOSITORY}.git` instead of `origin`.
-- The bump also rewrites the gate's version-pinned reinstall hint.
+**Commit:** `76f329d`
+**Applied fix:** A new `loadedCopy` in `memanto.cjs` follows the loader's precedence. When a global `capability.json` exists, the global copy wins unless gsd-core reports it skipped. Skipped means a ledgered global row that is not active, or a render-hooks load-failure reason that only the first-scanned copy can get. An `id collides` reason proves that the global copy holds the id. With no global `capability.json`, the active project row decides. Doctor gets the evidence only from the host CLI: render-hooks is now run before the `loaded` check, and its `failed to load (<reason>)` warnings are reused. No gsd-core internals are required, so the bundle's builtin-only require rule still holds. A child-process `loadRegistry` variant was tried first and dropped because it broke that rule.
 
-Tests in `test/release.test.cjs`:
-- They read the refusal regex from the workflow and prove it hermetically. `git config --file` runs over plain fixture files in an `os.tmpdir()` directory. A clean config exits 1. Each planted `insteadOf`, `pushInsteadOf`, `http.extraheader`, `http.proxy`, `credential.helper`, `include.path` and `includeIf` key exits 0.
-- They run the bump heredoc on a temp copy of `capability.json`.
-- They pin the job split, the `--ignore-scripts` flags and the three steps allowed to hold `GH_TOKEN`.
+The `gate-bundle` message now reads `gsd-core loads memanto from <global dir> (a global capability.json exists, so gsd-core skips the project copy with the same id as colliding), ...`. Its fix still deletes the stray global copy and keeps the project install. The `loaded` line notes when `capability list` disagrees with the copy gsd-core loads. In the same case the `duplicate-install` hint no longer suggests `capability remove --scope project`: it names the unledgered copy to delete by hand. README agrees with all of this.
 
-No repository `.git/config` was written.
-
-### WR-03: The doctor `gate-bundle` mismatch fix tells the user to remove the wrong copy
-
-**Commit:** `527f262`
-**Applied fix:** No fix hint tells the user to remove an installed bundle or the installed copy gsd-core loaded. When no installed bundle can run, doctor names the copy that has no committed ledger entry. It says to delete that copy by hand (`capability remove` cannot remove an unledgered copy) and to keep the installed bundle, naming its path. When gsd-core skipped an installed global bundle and loaded the project one, the hint points at the load error, or at reinstalling that bundle. New doctor test: a project install next to a hand-copied global bundle. The hint names the global directory, keeps the project install, and contains no `capability remove memanto --scope project`.
-
-### IN-01: Probe `fix` strings bypass `clean()`
-
-**Commit:** `7387695`
-**Applied fix:** `probeRecord` passes `fix` through `clean(c.fix, REASON_MAX)`. The test feeds fixes containing CR/LF, U+2028 and a 5000-character string, and checks that they come back neutralized and capped at 300 characters.
-
-### IN-02: `stage-bundle` leaks temp directories on its failure paths
-
-**Commit:** `daf5019`
-**Applied fix:** Failures throw `StageError`. `stage()` removes its staging root before it rethrows, `install()` removes a fresh temp home before it fails, and `main()` prints the error and exits 1. `main()` runs only when the script is executed directly. Tests:
-- A failed install (an empty `GSD_CORE_DIR`) run with a private `TMPDIR` leaves no `memanto-*` entry.
-- In-process `stage()` calls over a temp fake repo with a symlink, and with a non-regular file, leave the injected `tmpRoot` empty.
-
-### IN-03: The "global preferred" test cannot tell the global gate from a `[gate-bundle]` block
-
-**Commit:** `820bbca`
-**Applied fix:** The test now requires `memanto: BLOCKED [agent-id]` and no `[gate-bundle]`. Only a test was changed; there was no behaviour change and so no failing test first.
-
-### IN-04: The predicate duplicates `lib/gate-bundle.cjs`, and `locateGsdTools` keeps a dead parameter
-
-**Commit:** `6243b0e`
-**Applied fix:** A 12-case table-driven test runs the real predicate command (`sh -c`, temp `GSD_HOME`, fixture `gate.cjs` files that print their bundle directory) and `resolveGateBundle` over the same fixtures. Both must pick the expected scope or block. The cases:
-- global valid
-- global and project both installed
-- global unledgered
-- planted project ledger with an unledgered global
-- global absent with the project ledgered
-- a stray global `gate.cjs` only
-- project unledgered
-- neither scope
-- a pending global entry
-- a global entry with no `version`
-- a global manifest with another id
-- a project entry with no `files`
-
-The unused `projectRoot` was dropped from `memanto.cjs` and from the `lib/gsd-host.cjs` comment, and a test pins that no call passes it.
-
-## Notes
-
-- Test-first: every behaviour change got its failing test first (CR-01, CR-02, WR-01, WR-03, IN-01, IN-02, and the WR-02 push/commit assertions). The WR-02 job-split and bump tests were written after the workflow edit, but both fail against the pre-fix workflow, which had one job and did not rewrite the pin. IN-03 and IN-04 add or strengthen tests only.
-- WR-03 follows the hosts' own `capability list` report. With a hand-copied global bundle next to a consented project install, the list marks the project row active, and doctor reports from that.
-- `package.json` and `capability.json` stay at version 0.1.0.
+Tests:
+- A hand-copied global next to a consented project install (temp `GSD_HOME`).
+- A global install skipped for `engines.gsd` next to a project install, which names the project copy as loaded.
+- A `loadedCopy` unit matrix.
 
 ---
 
-_Fixed: 2026-11-22T01:24:13Z_
+_Fixed: 2026-11-22T01:55:49Z_
 _Fixer: Claude (gsd-code-fixer)_
-_Iteration: 2_
+_Iteration: 3_
