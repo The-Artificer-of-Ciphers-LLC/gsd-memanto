@@ -108,7 +108,7 @@ The gate runs `scripts/gate.cjs` only from an installed bundle. An installed bun
 - If `${GSD_HOME:-$HOME}/.gsd/capabilities/memanto/capability.json` exists, gsd-core loads that global copy, even when no ledger lists it. The gate then runs the global bundle when it is installed and blocks with `[gate-bundle]` when it is not. It never falls back to a project copy in this case, because a project ledger and bundle can be committed to the repository.
 - If no global `capability.json` exists, the gate runs the project bundle when it is installed and blocks with `[gate-bundle]` when it is not. gsd-core activates a project bundle only when this machine holds a consent record for it.
 
-A directory that only holds a stray or planted `scripts/gate.cjs` is never run.
+A directory that only holds a stray or planted `scripts/gate.cjs` is never run. A `[gate-bundle]` line names the expanded directories it checked (the global one under the resolved `GSD_HOME`, or your home directory when `GSD_HOME` is unset, and the project one) and the version-pinned reinstall command, `gsd-tools capability install npm:@taoc/gsd-memanto@<version> --yes`, with `--scope project` for a project-scope install.
 
 Example:
 

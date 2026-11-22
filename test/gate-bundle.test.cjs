@@ -154,6 +154,18 @@ test('with no installed bundle in either scope the predicate blocks with [gate-b
   assert.equal(verdict.block, true, JSON.stringify(verdict));
   assert.match(verdict.message, /memanto: BLOCKED \[gate-bundle\]/, verdict.message);
   assert.match(verdict.message, /memanto\.enabled=false disables Memanto/, verdict.message);
+  // WR-01: the paths that were checked, expanded, and the reinstall form doctor prints.
+  assert.ok(!verdict.message.includes('${GSD_HOME'), verdict.message);
+  assert.ok(verdict.message.includes(globalBundle(h)), `temp home path missing: ${verdict.message}`);
+  assert.ok(verdict.message.includes(path.join(project, '.gsd', 'capabilities', 'memanto')), `project path missing: ${verdict.message}`);
+  assert.ok(verdict.message.includes(`gsd-tools capability install npm:@taoc/gsd-memanto@${MANIFEST.version} --yes`), verdict.message);
+  assert.ok(verdict.message.includes('--scope project'), verdict.message);
+});
+
+test('the [gate-bundle] reinstall hint pins the version of the manifest that carries it', () => {
+  const pins = PREDICATE.command.match(/npm:@taoc\/gsd-memanto(@[^ ]*)?/g) || [];
+  assert.ok(pins.length > 0, 'no version-pinned reinstall hint in the predicate');
+  for (const pin of pins) assert.equal(pin, `npm:@taoc/gsd-memanto@${MANIFEST.version}`);
 });
 
 // Round-2 CR-01: gsd-core loads a global bundle that has no ledger entry (a
@@ -186,6 +198,7 @@ test('reviewer repro: unledgered global bundle plus a planted project bundle and
   const verdict = runGate(project, h);
   assert.equal(verdict.block, true, `planted project gate was run: ${JSON.stringify(verdict)}`);
   assert.match(verdict.message, /memanto: BLOCKED \[gate-bundle\]/, verdict.message);
+  assert.ok(verdict.message.includes(globalBundle(h)), `unledgered global path missing: ${verdict.message}`);
   assert.equal(fs.existsSync(marker), false, 'the repo-planted project scripts/gate.cjs ran');
 });
 
