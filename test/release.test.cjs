@@ -224,6 +224,54 @@ test('the push refusal regex matches every planted redirect or credential key an
   }
 });
 
+// Round-4 IN-03: both refusal checks run as written in publish.yml, against
+// plain fixture files under os.tmpdir() (git config --file in place of
+// --local; no repository config is read or written). git config exits 0 on a
+// match (refuse), 1 on no match (continue), and anything else (128 for an
+// unparseable file) must fail the step instead of passing as "no match".
+const REFUSAL_END = '# End of the git config refusal.';
+
+function refusalScript(stepName) {
+  const step = stepNamed(releaseSteps(), stepName) || '';
+  const lines = step.split('\n');
+  const start = lines.findIndex((l) => /^\s*run: \|\s*$/.test(l));
+  const end = lines.findIndex((l) => l.trim() === REFUSAL_END);
+  assert.ok(start !== -1 && end > start, `"${stepName}" has no run block ending with "${REFUSAL_END}"`);
+  const body = lines.slice(start + 1, end);
+  const indent = Math.min(...body.filter((l) => l.trim() !== '').map((l) => l.length - l.trimStart().length));
+  return body.map((l) => l.slice(indent)).join('\n');
+}
+
+for (const stepName of [REFUSAL_STEP, 'Push the release commit and tag']) {
+  test(`"${stepName}" refuses on a match, continues on no match, and fails on a git config error`, (t) => {
+    const git = spawnSync('git', ['--version'], { encoding: 'utf8' });
+    if (git.error) return t.skip('git is not installed');
+    const script = refusalScript(stepName);
+    assert.ok(script.includes('git config --local --name-only --get-regexp'), script);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memanto-gitcfg-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const SECRET = 'planted-value-s3cret';
+    const run = (name, body) => {
+      const file = path.join(dir, `${name}.config`);
+      fs.writeFileSync(file, body);
+      const hermetic = `${script.split('git config --local').join(`git config --file '${file}'`)}\necho CONTINUED\n`;
+      return spawnSync('bash', ['-c', hermetic], { cwd: dir, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: dir } });
+    };
+    const clean = run('clean', '[core]\n\tbare = false\n');
+    assert.equal(clean.status, 0, `${clean.stdout}${clean.stderr}`);
+    assert.match(clean.stdout, /CONTINUED/);
+    const planted = run('planted', `[url "https://evil.example/"]\n\tinsteadOf = https://github.com/${SECRET}\n`);
+    assert.equal(planted.status, 1, `${planted.stdout}${planted.stderr}`);
+    assert.doesNotMatch(planted.stdout, /CONTINUED/);
+    assert.match(planted.stdout, /url\.https:\/\/evil\.example\/\.insteadof/);
+    assert.ok(!(planted.stdout + planted.stderr).includes(SECRET), `printed a config value: ${planted.stdout}${planted.stderr}`);
+    const broken = run('unparseable', 'this is not a git config\n');
+    assert.equal(broken.status, 1, `${broken.stdout}${broken.stderr}`);
+    assert.doesNotMatch(broken.stdout, /CONTINUED/);
+    assert.match(broken.stderr, /git config failed \(exit 128\)/);
+  });
+}
+
 // Round-2 WR-02 residual: code run by the tests must not share a runner with
 // the write token or the OIDC token.
 function workflowJobs(text) {
