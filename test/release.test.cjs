@@ -318,6 +318,58 @@ test('the release bump rewrites the version-pinned gate reinstall hint too', (t)
   for (const pin of pins) assert.equal(pin, 'npm:@taoc/gsd-memanto@9.8.7');
 });
 
+// Round-9 WR-01 release follow-up: doctor's shipped-gate check must survive the
+// release bump. The bump step rewrites the reinstall pin in the predicate and
+// runs no tests afterwards, so the check may not depend on the pinned version.
+function bumpedCopy(t, version) {
+  const bump = stepNamed(workflowSteps(read('.github/workflows/publish.yml')), 'Bump the version');
+  const m = /node <<'NODE'\n([\s\S]*?)\n\s*NODE\n/.exec(bump || '');
+  assert.ok(m, 'no node heredoc in the bump step');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memanto-bump-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  for (const f of ['capability.json', 'memanto.cjs']) fs.copyFileSync(path.join(ROOT, f), path.join(dir, f));
+  fs.cpSync(path.join(ROOT, 'lib'), path.join(dir, 'lib'), { recursive: true });
+  fs.cpSync(path.join(ROOT, 'scripts'), path.join(dir, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: '@taoc/gsd-memanto', version }));
+  fs.writeFileSync(path.join(dir, 'bump.cjs'), m[1].replace(/^ {10}/gm, ''));
+  const res = spawnSync(process.execPath, ['bump.cjs'], { cwd: dir, encoding: 'utf8' });
+  assert.equal(res.status, 0, res.stderr);
+  return dir;
+}
+
+function hookOf(cap, edit) {
+  const g = JSON.parse(JSON.stringify(cap.gates.find((x) => x.point === 'discuss:pre')));
+  const hook = { capId: 'memanto', kind: 'gate', check: g.check, blocking: g.blocking, onError: g.onError };
+  if (edit) edit(hook);
+  return hook;
+}
+
+function bumpOf(v, kind) {
+  const [maj, min, pat] = v.split('-')[0].split('.').map(Number);
+  if (kind === 'major') return `${maj + 1}.0.0`;
+  if (kind === 'minor') return `${maj}.${min + 1}.0`;
+  return `${maj}.${min}.${pat + 1}`;
+}
+
+for (const kind of ['patch', 'minor', 'major']) {
+  test(`after a ${kind} release bump, doctor still accepts the shipped gate and still rejects edited ones`, (t) => {
+    const current = readJson('capability.json').version;
+    const next = bumpOf(current, kind);
+    const dir = bumpedCopy(t, next);
+    const cap = JSON.parse(fs.readFileSync(path.join(dir, 'capability.json'), 'utf8'));
+    assert.equal(cap.version, next);
+    // The bumped bundle's own doctor, as the release ships it.
+    const doctor = require(path.join(dir, 'memanto.cjs'));
+    const shipped = doctor.shippedGate();
+    assert.deepEqual(doctor.gateMismatch(hookOf(cap), shipped), [], `the ${next} doctor rejects its own ${next} gate`);
+    // A gate pinned to another release (the old one) is still reported.
+    const old = hookOf(cap, (h) => (h.check.predicate.command = h.check.predicate.command.split(`gsd-memanto@${next}`).join(`gsd-memanto@${current}`)));
+    assert.deepEqual(doctor.gateMismatch(old, shipped), ['version']);
+    assert.deepEqual(doctor.gateMismatch(hookOf(cap, (h) => (h.check.predicate.command = 'exit 0')), shipped), ['command']);
+    assert.deepEqual(doctor.gateMismatch(hookOf(cap, (h) => { h.blocking = false; h.onError = 'skip'; }), shipped), ['blocking', 'onError']);
+  });
+}
+
 test('publish.yml installs an exact npm version of at least 11.15', () => {
   const text = read('.github/workflows/publish.yml');
   const m = /npm install -g npm@(\S+)/.exec(text);
