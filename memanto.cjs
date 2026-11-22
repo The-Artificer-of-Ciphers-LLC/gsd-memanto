@@ -78,7 +78,8 @@ function probeRecord(c) {
   }
   const id = clean(c.id === undefined ? 'check-probe' : c.id, REASON_MAX);
   const message = clean(c.message === undefined ? '' : c.message, REASON_MAX);
-  const fix = typeof c.fix === 'string' ? c.fix : '';
+  // Round-2 IN-01: fix is printed by renderText too, so it is cleaned like id and message.
+  const fix = typeof c.fix === 'string' ? clean(c.fix, REASON_MAX) : '';
   if (!STATUSES.has(c.status)) {
     return record(id, 'error', clean(`check probe returned status ${JSON.stringify(c.status)}: ${message}`, REASON_MAX), fix || INTERNAL_FIX);
   }

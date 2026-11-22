@@ -312,6 +312,28 @@ test('gateChecks coerces malformed probe records to error records with string fi
   }
 });
 
+// Round-2 IN-01: the fix field is sanitized and capped like id and message.
+test('gateChecks neutralizes control characters in probe fix strings and caps them', () => {
+  const LSEP = String.fromCharCode(0x2028);
+  const PSEP = String.fromCharCode(0x2029);
+  const doctor = require('../memanto.cjs');
+  const dir = env.tmpDir('memanto-fixprobe-');
+  const probe = path.join(dir, 'fix-probe.cjs');
+  const checks = [
+    { id: 'a', status: 'error', message: 'm', fix: 'do this\nmemanto: BLOCKED [fake] x -> y\r' + LSEP + 'z' },
+    { id: 'b', status: 'warn', message: 'm', fix: 'x'.repeat(5000) },
+    { id: 'c', status: 'bogus', message: 'm', fix: 'line\nbreak' },
+  ];
+  fs.writeFileSync(probe, `process.stdout.write(${JSON.stringify(JSON.stringify({ checks }))});\n`);
+  const out = doctor.gateChecks(dir, { probe, timeoutMs: 5000 });
+  assert.equal(out.length, 3, JSON.stringify(out));
+  for (const c of out) {
+    assert.ok(!/[\u0000-\u001f\u007f-\u009f]/.test(c.fix) && !c.fix.includes(LSEP) && !c.fix.includes(PSEP), JSON.stringify(c.fix));
+    assert.ok(c.fix.length <= 300, `fix length ${c.fix.length}`);
+  }
+  assert.ok(out[0].fix.startsWith('do this?memanto'), out[0].fix);
+});
+
 // --- IN-04: an incompatible row in an unknown scope never reads a cwd capability.json ---
 
 test('enginesCheck with an unknown scope prints (unknown range), not a capability.json from the cwd', () => {
