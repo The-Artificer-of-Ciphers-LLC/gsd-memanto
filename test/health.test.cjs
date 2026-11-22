@@ -139,6 +139,10 @@ const MISPARSED_USERINFO = [
   ['a path', 'http://u:12/x@host:8000', ['12/x', 'u:12', 'u:']],
   ['a fragment', 'http://user:123#w@host', ['123', 'user', '#w']],
   ['a query', 'http://user:123?w@host:8000', ['123', 'user', '?w']],
+  // Round-3 IN-01: still ambiguous, because the authority holds a ':'.
+  ['a backslash path', 'http:\\\\u:12\\x@host:8000', ['12', 'u:', 'x@']],
+  ['userinfo and a later @', 'http://u:pw@host:8000/x@y', ['pw', 'u:', 'x@']],
+  ['a %40 after host:port', 'http://u:12/x%40host:8000', ['12/x', 'u:12', 'u:']],
 ];
 
 for (const [label, value, secrets] of MISPARSED_USERINFO) {
@@ -157,8 +161,16 @@ for (const [label, value, secrets] of MISPARSED_USERINFO) {
     const r = runGate({ backend_url: value, api_url: servers.ok.url });
     assert.equal(r.block, true, r.message);
     assert.deepEqual(r.ids, ['backend-url'], r.message);
-    for (const secret of secrets) assert.ok(!r.message.includes(secret), `userinfo leaked: ${r.message}`);
-    assert.ok(!r.message.includes('@') && !r.message.includes('curl'), `userinfo leaked: ${r.message}`);
+    // The fix hint is a fixed text (it names the literal '@' separator), so the
+    // check is: the line is exactly the redacted message plus that hint.
+    assert.equal(
+      lineFor(r, 'backend-url'),
+      "memanto: BLOCKED [backend-url] memanto.backend_url has an ambiguous '@' in URL: http://<redacted> -> " +
+        "gsd_run config-set memanto.backend_url <http(s)://[user:password@]host:port> (a literal '@' before the host; %40 inside the password)",
+    );
+    const rest = r.message.replace(lineFor(r, 'backend-url'), '');
+    for (const secret of [...secrets, '@']) assert.ok(!rest.includes(secret), `userinfo leaked: ${r.message}`);
+    assert.ok(!r.message.includes('curl'), `probed: ${r.message}`);
   });
 }
 
@@ -167,7 +179,8 @@ test('a misparsed userinfo pointing at a live local port is not probed, so the p
   const before = servers.ok.requests.length;
   const r = runGate({ backend_url: `http://127.0.0.1:${port}/x@host:8000`, api_url: servers.ok.url });
   assert.deepEqual(r.ids, ['backend-url'], r.message);
-  assert.ok(lineFor(r, 'backend-url').includes('memanto.backend_url has malformed credentials, so its host is ambiguous'), r.message);
+  assert.ok(lineFor(r, 'backend-url').includes("memanto.backend_url has an ambiguous '@' in URL: http://<redacted> -> "), r.message);
+  assert.ok(lineFor(r, 'backend-url').endsWith("<http(s)://[user:password@]host:port> (a literal '@' before the host; %40 inside the password)"), r.message);
   assert.ok(!r.message.includes('/x') && !r.message.includes(port), r.message);
   assert.ok(!lineFor(r, 'backend-url').endsWith('…'), 'the line must fit LINE_MAX with its fix');
   assert.deepEqual(servers.ok.requests.slice(before).map((q) => q.url), ['/health'], 'only the api probe may reach the server');
@@ -184,11 +197,94 @@ test('displayBase (the health line and the curl hint) never echoes misparsed use
   assert.equal(displayBase('http://user:pa%20ss@host:8000/api/?q=1#x'), 'http://host:8000/api');
 });
 
+// Round-3 IN-01: an '@' after an authority with no ':' cannot end a password,
+// so a credential-free URL with '@' only in its path, query or fragment is
+// accepted. http://@host has an empty userinfo: accepted and shown without it.
+const UNAMBIGUOUS_AT = [
+  ['http://host/a@b', 'http://host/a@b'],
+  ['http://host/?x=a@b', 'http://host/?x=a@b'],
+  ['https://host/api#a@b', 'https://host/api#a@b'],
+  ['http://u@host/x@y', 'http://host/x@y'],
+  ['http://@host', 'http://host/'],
+  ['http://@host:8000/api', 'http://host:8000/api'],
+];
+
+for (const [value, shown] of UNAMBIGUOUS_AT) {
+  test(`validateEndpointUrl accepts ${value}, whose '@' cannot be part of a password`, () => {
+    const v = health().validateEndpointUrl(value);
+    assert.equal(v.ok, true, JSON.stringify(v));
+    assert.equal(health().redactUrl(value), shown);
+  });
+}
+
+test('http://@host:port (empty userinfo) is probed without an Authorization header and passes', () => {
+  const before = servers.ok.requests.length;
+  const r = runGate({ backend_url: servers.ok.url.replace('http://', 'http://@'), api_url: servers.ok.url });
+  assert.equal(r.block, false, r.message);
+  const reqs = servers.ok.requests.slice(before);
+  assert.equal(reqs.length, 2, JSON.stringify(reqs));
+  for (const q of reqs) assert.equal(q.authorization, undefined, JSON.stringify(q));
+});
+
 test('redactUrl still shows the host of a well-formed user:password@host URL', () => {
   const { redactUrl, validateEndpointUrl } = health();
   assert.equal(redactUrl('http://user:pass@host:8000/x'), 'http://host:8000/x');
   assert.equal(redactUrl('http://user:p@ss@host:8000/'), 'http://host:8000/');
   assert.equal(validateEndpointUrl('http://user:p@ss@host:8000/').ok, true);
+});
+
+// Round-3 WR-01: a value with no literal ASCII '@' can still hold a password,
+// for example an over-encoded %40 separator or an IME full-width '＠'. A value
+// that is not a cleanly parsed http(s) URL never has its authority echoed.
+const NO_ASCII_AT = [
+  ['a %40 separator', 'http://alice:s3cret%40memanto.internal:8000', 'http://<redacted>'],
+  ['a lower-case %40 separator and a path', 'https://alice:s3cret%40memanto.internal/api', 'https://<redacted>'],
+  ['a full-width at sign', 'http://alice:s3cret＠memanto.internal:8000', 'http://<redacted>'],
+  ['a small at sign', 'http://alice:s3cret﹫memanto.internal:8000', 'http://<redacted>'],
+  ['a percent-encoded full-width at sign', 'http://alice:s3cret%EF%BC%A0memanto.internal:8000', 'http://<redacted>'],
+  ['no scheme', 'alice:s3cret%40memanto.internal:8000', '<redacted>'],
+  ['no slashes after the scheme', 'http:alice:s3cret%40memanto.internal:8000', 'http://<redacted>'],
+  ['a non-http scheme', 'ftp://alice:s3cret%40memanto.internal:21', 'ftp://<redacted>'],
+];
+const NO_ASCII_AT_SECRETS = ['alice', 's3cret', 'memanto.internal'];
+
+for (const [label, value, shown] of NO_ASCII_AT) {
+  test(`redactUrl never echoes the authority of a value with ${label}`, () => {
+    assert.equal(health().redactUrl(value), shown);
+  });
+
+  test(`displayBase (the health line and the curl hint) never echoes a value with ${label}`, () => {
+    const out = require('../lib/checks.cjs').displayBase(value);
+    for (const secret of NO_ASCII_AT_SECRETS) assert.ok(!out.includes(secret), `${JSON.stringify(value)} -> ${JSON.stringify(out)}`);
+  });
+
+  for (const key of ['backend_url', 'api_url']) {
+    test(`the gate never prints memanto.${key} with ${label}`, () => {
+      const other = key === 'backend_url' ? 'api_url' : 'backend_url';
+      const r = runGate({ [key]: value, [other]: servers.ok.url });
+      const id = key === 'backend_url' ? 'backend-url' : 'api-url';
+      assert.equal(r.block, true, r.message);
+      assert.deepEqual(r.ids, [id], r.message);
+      assert.ok(lineFor(r, id).includes(`memanto.${key} is not an http(s) URL: ${shown} `), r.message);
+      for (const secret of NO_ASCII_AT_SECRETS) assert.ok(!r.message.includes(secret), `leaked ${secret}: ${r.message}`);
+    });
+  }
+}
+
+test('redactUrl shows a URL with userinfo only as scheme://host:port/path', () => {
+  const { redactUrl } = health();
+  assert.equal(redactUrl('http://user:s3cret@host:8000/api?token=t0k#frag'), 'http://host:8000/api');
+  assert.equal(redactUrl('https://user:s3cret@host/'), 'https://host/');
+  assert.equal(redactUrl('http:user:s3cret@host:8000'), 'http://host:8000/');
+});
+
+test('the curl hint of an unhealthy URL with userinfo shows only scheme://host:port/path', () => {
+  const base = servers.closed.url.replace('http://', 'http://alice:s3cret@');
+  const r = runGate({ backend_url: `${base}/api?token=t0k`, api_url: servers.ok.url });
+  assert.deepEqual(r.ids, ['backend-health'], r.message);
+  const line = lineFor(r, 'backend-health');
+  assert.ok(line.includes(`curl -fsS ${servers.closed.url}/api/health`), line);
+  for (const secret of ['alice', 's3cret', 't0k']) assert.ok(!r.message.includes(secret), `leaked ${secret}: ${r.message}`);
 });
 
 test('redactUrl removes control characters so a value cannot forge extra gate lines', () => {
@@ -275,7 +371,8 @@ test('absent URL keys block with both URL lines (defaults are empty)', () => {
 test('a scheme-less backend_url blocks with [backend-url] and skips its health check', () => {
   const r = runGate({ backend_url: 'localhost:8000', api_url: servers.ok.url });
   assert.deepEqual(r.ids, ['backend-url'], r.message);
-  assert.ok(lineFor(r, 'backend-url').includes('memanto.backend_url is not an http(s) URL: localhost:8000'), r.message);
+  // Round-3 WR-01: a value that is not a cleanly parsed http(s) URL is never echoed.
+  assert.ok(lineFor(r, 'backend-url').includes('memanto.backend_url is not an http(s) URL: <redacted> ->'), r.message);
 });
 
 test('an ftp api_url blocks with [api-url] and sends no request', () => {

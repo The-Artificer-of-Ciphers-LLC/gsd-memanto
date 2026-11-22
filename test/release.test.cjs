@@ -123,7 +123,7 @@ test('publish.yml pushes to an explicit github.com URL with hooks disabled', () 
   assert.match(push, /GIT_CONFIG_GLOBAL=\/dev\/null/);
   assert.match(push, /GIT_CONFIG_NOSYSTEM=1/);
   // A url.<base>.insteadOf rewrite would redirect even an explicit URL.
-  assert.match(push, /git config (--local )?--get-regexp/);
+  assert.match(push, /git config --local --name-only --get-regexp/);
   assert.match(push, /insteadOf|url\\\./);
 });
 
@@ -149,14 +149,47 @@ test('publish.yml gives GH_TOKEN only to the steps that call GitHub', () => {
   assert.ok(!/\n {4}env:\n(?: {6}.*\n)*? {6}GH_TOKEN:/.test(read('.github/workflows/publish.yml')), 'GH_TOKEN is in the job env');
 });
 
-// The key regex the push step refuses on, read from the workflow so this test
-// follows any change to it.
+// Round-3 WR-02: the refusal runs as its own token-free step right after the
+// release job's checkout, on every run including dry-run, so a checkout that
+// leaves such a key fails before npm staging instead of after it. It prints
+// key names only (--name-only), never values. The push step keeps a re-check.
+const REFUSAL_STEP = 'Refuse a git config that could redirect or capture the push credential';
+const REFUSAL_CMD = /git config --local --name-only --get-regexp '([^']+)'/;
+
+function releaseSteps() {
+  return workflowSteps(workflowJobs(read('.github/workflows/publish.yml')).release || '');
+}
+
+// The key regex the refusal step refuses on, read from the workflow so this
+// test follows any change to it.
 function refusalRegex() {
-  const push = stepNamed(workflowSteps(read('.github/workflows/publish.yml')), 'Push the release commit and tag');
-  const m = /git config --local --get-regexp '([^']+)'/.exec(push || '');
-  assert.ok(m, 'the push step has no git config --local --get-regexp refusal');
+  const m = REFUSAL_CMD.exec(stepNamed(releaseSteps(), REFUSAL_STEP) || '');
+  assert.ok(m, `no "${REFUSAL_STEP}" step with a git config --local --name-only --get-regexp refusal`);
   return m[1];
 }
+
+test('publish.yml refuses a redirecting git config in its own token-free step before npm staging, dry-run included', () => {
+  const steps = releaseSteps();
+  const names = steps.map((b) => (/name: (.*)/.exec(b) || [])[1] || (/uses: (\S+)/.exec(b) || [])[1]);
+  const refuse = names.indexOf(REFUSAL_STEP);
+  const checkout = names.findIndex((n) => /^actions\/checkout@/.test(n || ''));
+  assert.ok(refuse !== -1, `no "${REFUSAL_STEP}" step in the release job: ${names.join(' | ')}`);
+  assert.equal(refuse, checkout + 1, `the refusal must come right after the release checkout: ${names.join(' | ')}`);
+  for (const later of ['Bump the version', 'Stage the release on npm', 'Commit and tag the release', 'Push the release commit and tag']) {
+    assert.ok(names.indexOf(later) > refuse, `"${later}" must come after the refusal: ${names.join(' | ')}`);
+  }
+  const step = steps[refuse];
+  assert.ok(!/\n {8}if:/.test(step), 'the refusal step must run on every run, including dry-run');
+  assert.ok(!/GH_TOKEN|github\.token|secrets\./.test(step), 'the refusal step must hold no token');
+  assert.match(step, /GIT_CONFIG_GLOBAL=\/dev\/null/);
+  assert.match(step, /GIT_CONFIG_NOSYSTEM=1/);
+  assert.match(step, REFUSAL_CMD);
+  const push = stepNamed(steps, 'Push the release commit and tag');
+  const again = REFUSAL_CMD.exec(push || '');
+  assert.ok(again, 'the push step must re-check the git config with --name-only');
+  assert.equal(again[1], refusalRegex(), 'the push re-check must use the same key regex');
+  assert.ok(!/git config --local --get-regexp/.test(read('.github/workflows/publish.yml')), 'a refusal still prints config values');
+});
 
 // Hermetic: plain config files in a temp dir outside any repository, read with
 // git config --file. No repository config is written.
@@ -167,24 +200,27 @@ test('the push refusal regex matches every planted redirect or credential key an
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memanto-gitcfg-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const base = '[core]\n\trepositoryformatversion = 0\n\tbare = false\n[remote "origin"]\n\turl = https://github.com/o/r\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n[user]\n\tname = x\n';
+  const SECRET = 'planted-value-s3cret';
   const planted = {
-    insteadOf: '[url "https://evil.example/"]\n\tinsteadOf = https://github.com/\n',
-    pushInsteadOf: '[url "https://evil.example/"]\n\tpushInsteadOf = https://github.com/\n',
-    extraheader: '[http "https://github.com/"]\n\textraheader = AUTHORIZATION: basic x\n',
-    proxy: '[http]\n\tproxy = http://evil.example:3128\n',
-    credentialHelper: '[credential]\n\thelper = !evil\n',
-    includePath: '[include]\n\tpath = /tmp/evil.config\n',
-    includeIf: '[includeIf "gitdir:/"]\n\tpath = /tmp/evil.config\n',
+    insteadOf: `[url "https://evil.example/"]\n\tinsteadOf = https://github.com/${SECRET}\n`,
+    pushInsteadOf: `[url "https://evil.example/"]\n\tpushInsteadOf = https://github.com/${SECRET}\n`,
+    extraheader: `[http "https://github.com/"]\n\textraheader = AUTHORIZATION: basic ${SECRET}\n`,
+    proxy: `[http]\n\tproxy = http://${SECRET}.evil.example:3128\n`,
+    credentialHelper: `[credential]\n\thelper = !${SECRET}\n`,
+    includePath: `[include]\n\tpath = /tmp/${SECRET}.config\n`,
+    includeIf: `[includeIf "gitdir:/"]\n\tpath = /tmp/${SECRET}.config\n`,
   };
   const run = (name, body) => {
     const file = path.join(dir, `${name}.config`);
     fs.writeFileSync(file, body);
-    return spawnSync('git', ['config', '--file', file, '--get-regexp', regex], { encoding: 'utf8' });
+    return spawnSync('git', ['config', '--file', file, '--name-only', '--get-regexp', regex], { encoding: 'utf8' });
   };
   assert.equal(run('clean', base).status, 1, 'a clean checkout config must not be refused');
   for (const [name, body] of Object.entries(planted)) {
     const res = run(name, base + body);
     assert.equal(res.status, 0, `${name} was not refused: ${res.stdout}${res.stderr}`);
+    assert.ok(res.stdout.trim() !== '', `${name}: the refusal must name the key`);
+    assert.ok(!(res.stdout + res.stderr).includes(SECRET), `${name}: the refusal printed a config value: ${res.stdout}`);
   }
 });
 

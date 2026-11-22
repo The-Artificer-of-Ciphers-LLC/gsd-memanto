@@ -121,6 +121,23 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # Right after checkout, before anything is staged on npm, and on every run including dry-run: a checkout that
+      # leaves such a key fails here, not after the version is already staged. It holds no token, and --name-only
+      # prints key names only, so a planted value (an auth header, say) never reaches the job log. The push
+      # step re-checks just before it sends the credential.
+      - name: Refuse a git config that could redirect or capture the push credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          # No global or system git config, so only the checkout's own .git/config applies.
+          export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+          # url.<base>.insteadOf (or pushInsteadOf) would redirect even an explicit URL, and http.*, credential.*
+          # and include* keys can route or capture the header. The checkout writes none of them.
+          if git config --local --name-only --get-regexp '^(url|http|credential|include|includeif)\.'; then
+            echo "the checkout's git config holds url, http, credential or include keys (names above); refusing to release" >&2
+            exit 1
+          fi
+
       - name: Refuse to release from anywhere but main
         if: github.ref != 'refs/heads/main'
         env:
@@ -254,10 +271,10 @@ jobs:
           set -euo pipefail
           # No global or system git config, so only the checkout's own .git/config applies.
           export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-          # url.<base>.insteadOf (or pushInsteadOf) would redirect even an explicit URL, and http.*, credential.*
-          # and include* keys can route or capture the header. The checkout writes none of them, so refuse to push.
-          if git config --local --get-regexp '^(url|http|credential|include|includeif)\.'; then
-            echo "the repository git config has url, http, credential or include keys (listed above); refusing to send the push credential. The version is staged on npm: reject it (npm stage reject <stage-id>)." >&2
+          # Re-check of the refusal step after checkout (a later step could have written a key): url.<base>.insteadOf
+          # would redirect even this explicit URL. Key names only.
+          if git config --local --name-only --get-regexp '^(url|http|credential|include|includeif)\.'; then
+            echo "the repository git config has url, http, credential or include keys (names above); refusing to send the push credential. The version is staged on npm: reject it (npm stage reject <stage-id>)." >&2
             exit 1
           fi
           remote="https://github.com/${GITHUB_REPOSITORY}.git"
