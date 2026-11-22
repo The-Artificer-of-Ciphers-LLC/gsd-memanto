@@ -127,6 +127,30 @@ test('text output: one status line per check, fix lines under non-ok checks, sum
   assert.ok(lines.some((l) => l.includes('memanto.cjs" doctor')), res.stdout);
 });
 
+// Round-3 WR-01: the reviewer's reproduction. A password behind an over-encoded
+// %40 separator or a full-width '＠' never reaches doctor's text or --raw output.
+test('doctor text and --raw never print a password behind a %40 or full-width at-sign separator', () => {
+  const project = env.makeProject({
+    config: healthyConfig({
+      memanto: {
+        enabled: true,
+        agent_id: 'doctor-agent',
+        backend_url: 'http://alice:s3cret%40memanto.internal:8000',
+        api_url: 'http://alice:s3cret＠memanto.internal:8000',
+      },
+    }),
+  });
+  for (const raw of [true, false]) {
+    for (const res of [viaGsd(project, { raw }), direct(project, { raw })]) {
+      assert.equal(res.status, 1, `${res.stdout}${res.stderr}`);
+      const out = res.stdout + res.stderr;
+      assert.ok(out.includes('memanto.backend_url is not an http(s) URL: http://<redacted>'), out);
+      assert.ok(out.includes('memanto.api_url is not an http(s) URL: http://<redacted>'), out);
+      for (const secret of ['alice', 's3cret', 'memanto.internal']) assert.ok(!out.includes(secret), `leaked ${secret}: ${out}`);
+    }
+  }
+});
+
 test('an unknown subcommand exits 1 with a usage message naming doctor', () => {
   const project = env.makeProject({ config: healthyConfig() });
   const res = env.gsd(['memanto', 'nope'], { cwd: project, home, env: runEnv() });
