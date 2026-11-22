@@ -160,13 +160,24 @@ function describeRow(r) {
   return `${r.status} in ${r.scope} scope${r.reason ? ` (${r.reason})` : ''}`;
 }
 
-function loadedCheck(rows, loaded) {
-  const active = rows.find((r) => r.status === 'active');
+// Round-4 WR-01: gsd-core skipped one of two copies and doctor cannot tell which.
+function undeterminedText(loaded, scopeDirs) {
+  return `gsd-core skipped a memanto copy (${loaded.reasons.join('; ')}); doctor cannot tell whether it skipped the global copy at ${scopeDirs.global} or the project copy at ${scopeDirs.project}`;
+}
+
+function loadedCheck(rows, loaded, scopeDirs) {
+  if (loaded && loaded.scope === 'unknown') {
+    return record('loaded', 'error', clean(undeterminedText(loaded, scopeDirs), REASON_MAX * 2), 'fix the load error the render checks report, or remove one of the two copies');
+  }
+  const activeRows = rows.filter((r) => r.status === 'active');
+  const active = activeRows[0];
   if (active) {
     const base = `memanto ${active.version || ''} is active in ${active.scope} scope`.replace('  ', ' ');
-    // Round-3 IN-02: capability list can name a copy the loader skipped.
-    if (loaded && loaded.scope !== active.scope) {
-      return record('loaded', 'ok', clean(`${base} per capability list, but gsd-core loads the ${loaded.scope} copy at ${loaded.dir} (see gate-bundle)`, REASON_MAX * 2), '');
+    // Round-3 IN-02 / round-4 WR-01: capability list can show a copy the loader
+    // skipped as active, so name the copy gsd-core loads whenever it is not the
+    // only active row.
+    if (loaded && (loaded.scope !== active.scope || activeRows.length > 1)) {
+      return record('loaded', 'ok', clean(`${base} per capability list; gsd-core loads the ${loaded.scope} copy at ${loaded.dir} (see gate-bundle)`, REASON_MAX * 2), '');
     }
     return record('loaded', 'ok', base, '');
   }
@@ -257,7 +268,7 @@ function renderCheck(point, rh) {
   return record(id, 'error', `no memanto hook renders at ${point}; it is not enforced (fails open)${why}`, `fix the reported load error or ${reinstallFix()}`);
 }
 
-function duplicateCheck(scopeDirs, roots) {
+function duplicateCheck(scopeDirs, roots, loaded) {
   const present = Object.entries(scopeDirs).filter(([, dir]) => dir && isFile(path.join(dir, 'capability.json')));
   const distinct = new Set(present.map(([, dir]) => path.resolve(dir)));
   if (present.length < 2 || distinct.size < 2) {
@@ -270,10 +281,15 @@ function duplicateCheck(scopeDirs, roots) {
   const fix = unledgered
     ? clean(`delete ${scopeDirs[unledgered]} by hand (no ${unledgered} ledger lists it, so gsd-tools capability remove cannot remove it; see gate-bundle)`, 600)
     : 'remove one copy: gsd-tools capability remove memanto --scope project (or --scope global)';
+  // Round-4 WR-01: say which copy gsd-core keeps only when doctor knows it.
+  let keeps;
+  if (loaded && loaded.scope === 'global') keeps = 'gsd-core keeps the global one and skips the project one';
+  else if (loaded && loaded.scope === 'project') keeps = 'gsd-core skipped the global one and loads the project one (see gate-bundle)';
+  else keeps = 'gsd-core loads at most one of them (see loaded and gate-bundle)';
   return record(
     'duplicate-install',
     'warn',
-    clean(`memanto is installed in both global (${scopeDirs.global}) and project (${scopeDirs.project}) scope; gsd-core keeps the global one and skips the project one`, REASON_MAX),
+    clean(`memanto is installed in both global (${scopeDirs.global}) and project (${scopeDirs.project}) scope; ${keeps}`, REASON_MAX * 2),
     fix,
   );
 }
@@ -291,40 +307,47 @@ function loadFailureReasons(renders) {
   return reasons;
 }
 
-// Reasons the loader can give a copy before its id-collision check (manifest
-// read, reserved prefix, validation). Any other reason (engines.gsd, consent,
-// a claimed skill, agent, config key or command family) comes after it, so a
-// project copy cannot get one while an accepted global copy holds the id.
-const PRE_COLLISION = /capability\.json missing|unreadable or invalid capability\.json|reserved first-party prefix|failed validation/;
-const COLLIDES = /id collides/;
+const COLLIDES = /^id collides/;
+// Round-4 WR-01: the skip reasons gsd-core's loader gives only AFTER its
+// id-collision check (capability-loader.cjs 1.20.1: owned skill, agent, config
+// key or command family, engines.gsd, hook fragments, cross-capability
+// validation, configHome confinement). While an accepted global copy holds the
+// id, a project copy is skipped as colliding before it can get one of these, so
+// such a reason names the global copy as the skipped one. Every other reason
+// (manifest read, reserved prefix, failed validation, or one this list does not
+// know) can belong to either copy.
+const POST_COLLISION =
+  /^(owns (skill|agent|config key|command family) |incompatible with GSD |hook fragment could not be materialized|invalid hook fragment|cross-capability validation (error|failed)|configHome confinement rejected)/;
 
-// Round-3 IN-02: the copy gsd-core loads, by the loader's precedence. The
-// loader scans the global root first. A global capability.json it accepts
-// claims the id, even with no ledger entry, and a project copy with the same id
-// is then skipped as colliding. capability list (built from the ledgers) still
-// shows that project row as active and has no row for an unledgered global
-// copy, so it alone cannot say which copy loads. failures are the loader's own
-// skip reasons from render-hooks (loadFailureReasons), or null when no hook was
-// rendered. { scope, dir } or null when no copy is loaded.
+// The copy gsd-core loads, by the loader's precedence. The loader scans the
+// global root first. A global capability.json it accepts claims the id, even
+// with no ledger entry, and a project copy with the same id is then skipped as
+// colliding. capability list (built from the ledgers) can show a skipped copy
+// as active and has no row for an unledgered global copy, so it alone cannot
+// say which copy loads. failures are the loader's own skip reasons from
+// render-hooks (loadFailureReasons), which carry no scope, or null when no hook
+// was rendered. Round-4 WR-01: a reason that names the global copy (see
+// POST_COLLISION) means the global copy is not loaded even when capability
+// list shows a ledgered global row as active, and a reason that either copy
+// could have is reported as undetermined, never guessed.
+// { scope, dir } | { scope: 'unknown', dir: null, reasons } | null (no copy loaded)
 function loadedCopy({ rows, scopeDirs, roots, failures }) {
   const list = rows || [];
-  const active = list.find((r) => r.status === 'active');
-  const fromList = active && scopeDirs[active.scope] ? { scope: active.scope, dir: scopeDirs[active.scope] } : null;
+  const projectActive = list.find((r) => r.scope === 'project' && r.status === 'active');
+  const projectCopy = projectActive && scopeDirs.project ? { scope: 'project', dir: scopeDirs.project } : null;
   // No global capability.json: only the project copy can load.
-  if (!gateBundle.hasManifest(roots.gsdHome)) return fromList;
+  if (!gateBundle.hasManifest(roots.gsdHome)) return projectCopy;
   const reasons = failures || [];
-  const collided = reasons.some((r) => COLLIDES.test(r)); // proves the global copy holds the id
-  const other = reasons.filter((r) => !COLLIDES.test(r));
   const globalRow = list.find((r) => r.scope === 'global');
   let globalSkipped;
-  if (collided) globalSkipped = false;
-  else if (globalRow) globalSkipped = globalRow.status !== 'active';
-  else {
-    globalSkipped =
-      other.length > 0 && (!gateBundle.hasManifest(roots.projectRoot) || other.length > 1 || other.some((r) => !PRE_COLLISION.test(r)));
-  }
+  if (reasons.some((r) => COLLIDES.test(r))) globalSkipped = false; // proves the global copy holds the id
+  else if (globalRow && globalRow.status !== 'active') globalSkipped = true;
+  else if (reasons.some((r) => POST_COLLISION.test(r))) globalSkipped = true;
+  else if (reasons.length === 0) globalSkipped = false;
+  else if (!gateBundle.hasManifest(roots.projectRoot)) globalSkipped = true; // only the global copy exists
+  else return { scope: 'unknown', dir: null, reasons };
   if (!globalSkipped) return { scope: 'global', dir: scopeDirs.global };
-  return fromList && fromList.scope === 'project' ? fromList : null;
+  return projectCopy;
 }
 
 const otherScope = (scope) => (scope === 'global' ? 'project' : 'global');
@@ -338,21 +361,32 @@ const otherScope = (scope) => (scope === 'global' ? 'project' : 'global');
 // installed, nor any installed copy. It names the stray copy: a directory with
 // no committed ledger entry is deleted by hand, because gsd-tools capability
 // remove only removes ledgered installs.
-function gateBundleCheck(loaded, scopeDirs, roots) {
+function gateBundleCheck(loaded, scopeDirs, roots, failures = null) {
   const resolved = gateBundle.resolveGateBundle(roots);
   const installed = {
     global: gateBundle.isInstalledBundle(roots.gsdHome),
     project: gateBundle.isInstalledBundle(roots.projectRoot),
   };
   const keep = (scope) => (installed[scope] ? `; keep the installed ${scope} bundle at ${scopeDirs[scope]}` : '');
-  if (loaded && resolved && path.resolve(resolved) !== path.resolve(loaded.dir)) {
-    // Only reachable as: the global bundle is installed, but gsd-core skipped it
-    // (failed validation, outside engines.gsd) and loads the project one.
-    const other = otherScope(loaded.scope);
+  if (loaded && loaded.scope === 'unknown') {
+    // Round-4 WR-01: fail closed when doctor cannot tell which copy loads.
     return record(
       'gate-bundle',
       'error',
-      clean(`the discuss:pre gate would run ${resolved}/scripts/gate.cjs, but gsd-core loads the bundle at ${loaded.dir}`, REASON_MAX),
+      clean(`${undeterminedText(loaded, scopeDirs)}, so it cannot confirm that the discuss:pre gate (${resolved ? `${resolved}/scripts/gate.cjs` : 'no installed bundle'}) runs the copy gsd-core loads`, REASON_MAX * 2),
+      'fix the load error the render checks report, or remove one of the two copies, then run doctor again',
+    );
+  }
+  if (loaded && resolved && path.resolve(resolved) !== path.resolve(loaded.dir)) {
+    // Only reachable as: the global bundle is installed, but gsd-core skipped it
+    // (failed validation, an invalid fragment, a clash, outside engines.gsd) and
+    // loads the project one. Round-4 WR-01: the loader's reasons, when reported.
+    const other = otherScope(loaded.scope);
+    const why = failures && failures.length ? ` (gsd-core skipped the ${other} copy: ${failures.join('; ')})` : '';
+    return record(
+      'gate-bundle',
+      'error',
+      clean(`the discuss:pre gate would run ${resolved}/scripts/gate.cjs, but gsd-core loads the bundle at ${loaded.dir}${why}`, REASON_MAX * 2),
       clean(
         `gsd-core did not load the installed ${other} bundle at ${resolved}: fix the load error the loaded, engines and render checks report, ` +
           `or replace it: gsd-tools capability install npm:@taoc/gsd-memanto@${ownVersion()} --yes${other === 'project' ? ' --scope project' : ''}${keep(loaded.scope)}`,
@@ -366,10 +400,14 @@ function gateBundleCheck(loaded, scopeDirs, roots) {
     const strayScope = gateBundle.hasManifest(roots.gsdHome) ? 'global' : 'project';
     const strayDir = scopeDirs[strayScope];
     const then = installed[otherScope(strayScope)] ? keep(otherScope(strayScope)) : `, then ${reinstallFix()}`;
-    const collides =
-      loaded.scope === 'global' && gateBundle.hasManifest(roots.projectRoot)
+    // Round-4 IN-01: claim the collision only when gsd-core reported it;
+    // otherwise state only what is known.
+    let collides = '';
+    if (loaded.scope === 'global' && gateBundle.hasManifest(roots.projectRoot)) {
+      collides = (failures || []).some((r) => COLLIDES.test(r))
         ? ' (a global capability.json exists, so gsd-core skips the project copy with the same id as colliding)'
-        : '';
+        : ' (a global capability.json exists, and gsd-core scans the global copy first)';
+    }
     return record(
       'gate-bundle',
       'error',
@@ -436,6 +474,8 @@ function collectChecks(cwd) {
   const { enabled, rec } = enabledCheck(cfg);
   checks.push(rec);
 
+  const loadedNow = () => loadedCopy({ rows, scopeDirs, roots, failures });
+
   if (located.ok) {
     const opts = { cwd, env };
     const list = host.capabilityList(located.tools, opts);
@@ -453,17 +493,18 @@ function collectChecks(cwd) {
           renderChecks.push(renderCheck(point, rh));
         }
         failures = renders.length ? loadFailureReasons(renders) : null;
-        checks.push(loadedCheck(rows, loadedCopy({ rows, scopeDirs, roots, failures })));
+        checks.push(loadedCheck(rows, loadedNow(), scopeDirs));
       }
       checks.push(consentCheck(rows, scopeDirs));
       checks.push(enginesCheck(rows, scopeDirs, located.version));
       checks.push(...renderChecks);
     }
   }
-  checks.push(duplicateCheck(scopeDirs, roots));
   // rows is null when capability list could not be read; loadedCopy then
-  // falls back to the precedence rule alone.
-  checks.push(gateBundleCheck(loadedCopy({ rows, scopeDirs, roots, failures }), scopeDirs, roots));
+  // decides only what the remaining evidence proves.
+  const loaded = loadedNow();
+  checks.push(duplicateCheck(scopeDirs, roots, loaded));
+  checks.push(gateBundleCheck(loaded, scopeDirs, roots, failures));
   checks.push(discussBypassCheck(cfg));
   if (enabled) checks.push(...gateChecks(cwd));
   return checks;

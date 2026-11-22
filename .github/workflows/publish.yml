@@ -133,10 +133,22 @@ jobs:
           export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
           # url.<base>.insteadOf (or pushInsteadOf) would redirect even an explicit URL, and http.*, credential.*
           # and include* keys can route or capture the header. The checkout writes none of them.
-          if git config --local --name-only --get-regexp '^(url|http|credential|include|includeif)\.'; then
+          # git config exits 0 on a match (refuse), 1 on no match (continue); any other exit (128 for an unparseable
+          # config) means the config could not be checked, so the step fails.
+          set +e
+          names="$(git config --local --name-only --get-regexp '^(url|http|credential|include|includeif)\.')"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            printf '%s\n' "$names"
             echo "the checkout's git config holds url, http, credential or include keys (names above); refusing to release" >&2
             exit 1
           fi
+          if [ "$rc" -ne 1 ]; then
+            echo "git config failed (exit $rc), so the checkout's git config cannot be checked; refusing to release" >&2
+            exit 1
+          fi
+          # End of the git config refusal.
 
       - name: Refuse to release from anywhere but main
         if: github.ref != 'refs/heads/main'
@@ -272,11 +284,21 @@ jobs:
           # No global or system git config, so only the checkout's own .git/config applies.
           export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
           # Re-check of the refusal step after checkout (a later step could have written a key): url.<base>.insteadOf
-          # would redirect even this explicit URL. Key names only.
-          if git config --local --name-only --get-regexp '^(url|http|credential|include|includeif)\.'; then
+          # would redirect even this explicit URL. Key names only. Exit 0 is a match, 1 no match, anything else an error.
+          set +e
+          names="$(git config --local --name-only --get-regexp '^(url|http|credential|include|includeif)\.')"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            printf '%s\n' "$names"
             echo "the repository git config has url, http, credential or include keys (names above); refusing to send the push credential. The version is staged on npm: reject it (npm stage reject <stage-id>)." >&2
             exit 1
           fi
+          if [ "$rc" -ne 1 ]; then
+            echo "git config failed (exit $rc), so the repository git config cannot be checked; refusing to send the push credential. The version is staged on npm: reject it (npm stage reject <stage-id>)." >&2
+            exit 1
+          fi
+          # End of the git config refusal.
           remote="https://github.com/${GITHUB_REPOSITORY}.git"
           # The checkout persisted no credential, so the push credential exists only for these two commands.
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"

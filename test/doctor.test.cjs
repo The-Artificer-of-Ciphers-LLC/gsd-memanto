@@ -127,27 +127,45 @@ test('text output: one status line per check, fix lines under non-ok checks, sum
   assert.ok(lines.some((l) => l.includes('memanto.cjs" doctor')), res.stdout);
 });
 
-// Round-3 WR-01: the reviewer's reproduction. A password behind an over-encoded
-// %40 separator or a full-width '＠' never reaches doctor's text or --raw output.
-test('doctor text and --raw never print a password behind a %40 or full-width at-sign separator', () => {
+// Round-3 WR-01 and round-4 CR-01: the reviewers' reproductions. A rejected
+// endpoint value never reaches doctor's text or --raw output, in either form.
+// Pairs of [backend_url, api_url]; every value holds the secrets below.
+const DOCTOR_SECRETS = ['alice', 's3cret', 'memanto.internal'];
+const DOCTOR_REJECTED = [
+  ['http://alice:s3cret%40memanto.internal:8000', 'http://alice:s3cret＠memanto.internal:8000'],
+  ['http://127.0.0.1\\alice:s3cret@memanto.internal:8000', 'http://127.0.0.1/alice:s3cret@memanto.internal:8000'],
+  ['http://alice:s3cret﹫memanto.internal:8000', 'http://alice:s3cret@memanto.internal:8000/x@y'],
+  ['http://alice:s3cret@memanto.internal:8000/?q=1', 'alice:s3cret%40memanto.internal:8000'],
+];
+
+for (const [backend, api] of DOCTOR_REJECTED) {
+  test(`doctor text and --raw never print a rejected endpoint value (${JSON.stringify(backend)}, ${JSON.stringify(api)})`, () => {
+    const project = env.makeProject({
+      config: healthyConfig({ memanto: { enabled: true, agent_id: 'doctor-agent', backend_url: backend, api_url: api } }),
+    });
+    for (const raw of [true, false]) {
+      for (const res of [viaGsd(project, { raw }), direct(project, { raw })]) {
+        assert.equal(res.status, 1, `${res.stdout}${res.stderr}`);
+        const out = res.stdout + res.stderr;
+        assert.ok(out.includes('value <redacted>'), out);
+        assert.ok(out.includes('memanto.backend_url must be http(s)://[user[:password]@]host[:port][/path]'), out);
+        assert.ok(out.includes('memanto.api_url must be http(s)://[user[:password]@]host[:port][/path]'), out);
+        for (const secret of DOCTOR_SECRETS) assert.ok(!out.includes(secret), `leaked ${secret}: ${out}`);
+      }
+    }
+  });
+}
+
+test('doctor prints only scheme://host:port for an accepted endpoint with userinfo and a base path', () => {
+  const withCreds = `${servers.ok.url.replace('http://', 'http://alice:s3cret@')}/tenant-42`;
   const project = env.makeProject({
-    config: healthyConfig({
-      memanto: {
-        enabled: true,
-        agent_id: 'doctor-agent',
-        backend_url: 'http://alice:s3cret%40memanto.internal:8000',
-        api_url: 'http://alice:s3cret＠memanto.internal:8000',
-      },
-    }),
+    config: healthyConfig({ memanto: { enabled: true, agent_id: 'doctor-agent', backend_url: withCreds, api_url: withCreds } }),
   });
   for (const raw of [true, false]) {
-    for (const res of [viaGsd(project, { raw }), direct(project, { raw })]) {
-      assert.equal(res.status, 1, `${res.stdout}${res.stderr}`);
-      const out = res.stdout + res.stderr;
-      assert.ok(out.includes('memanto.backend_url is not an http(s) URL: http://<redacted>'), out);
-      assert.ok(out.includes('memanto.api_url is not an http(s) URL: http://<redacted>'), out);
-      for (const secret of ['alice', 's3cret', 'memanto.internal']) assert.ok(!out.includes(secret), `leaked ${secret}: ${out}`);
-    }
+    const res = viaGsd(project, { raw });
+    const out = res.stdout + res.stderr;
+    assert.ok(out.includes(`${servers.ok.url}/<base path>/health`), out);
+    for (const secret of ['alice', 's3cret', 'tenant-42']) assert.ok(!out.includes(secret), `leaked ${secret}: ${out}`);
   }
 });
 

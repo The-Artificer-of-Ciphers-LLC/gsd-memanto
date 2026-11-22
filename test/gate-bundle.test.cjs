@@ -242,6 +242,24 @@ test('doctor: a hand-copied global bundle next to a project install names the gl
   assert.ok(dup.fix.includes(`delete ${stray} by hand`), dup.fix);
 });
 
+// Round-4 IN-01: the "skipped as colliding" claim needs the host's collision
+// warning. With memanto disabled doctor renders no hooks, so it never sees how
+// gsd-core handled the project copy and must not claim a collision.
+test('doctor: gate-bundle claims the project copy collided only when gsd-core reported the collision', () => {
+  const h = env.tmpDir('memanto-home-');
+  const project = env.makeProject({
+    config: { memanto: { enabled: false, agent_id: '', backend_url: servers.ok.url, api_url: servers.ok.url } },
+    phaseDirs: ['01-test'],
+  });
+  const bundle = projectInstall(project, h);
+  const stray = handCopyGlobal(h);
+  const r = doctor(project, h, bundle).check('gate-bundle');
+  assert.equal(r && r.status, 'error', JSON.stringify(r));
+  assert.ok(r.message.includes(`gsd-core loads memanto from ${stray}`), r.message);
+  assert.ok(!r.message.includes('as colliding'), `collision claimed without the host's warning: ${r.message}`);
+  assert.ok(r.message.includes('gsd-core scans the global copy first'), r.message);
+});
+
 test('doctor: a global install that gsd-core skips (outside engines.gsd) next to a project install names the project copy as loaded', () => {
   const h = env.tmpDir('memanto-home-');
   const project = emptyAgentProject();
@@ -283,6 +301,104 @@ test('loadedCopy follows the loader precedence: a global capability.json wins un
     { scope: 'project', dir: scopeDirs.project },
   );
 });
+
+// Round-4 WR-01: gsd-core can skip a LEDGERED global copy that capability list
+// still shows as active (an invalid fragment, a failed validation, a clash).
+// loop render-hooks prints the reason with no scope. A reason the loader gives
+// only after its id-collision check names the global copy (a project copy is
+// skipped as colliding first while the global copy holds the id), so the
+// global copy is not loaded. A reason either copy can get is undetermined.
+test('loadedCopy: a skip reason that names the global copy means it is not loaded, even with an active global row', () => {
+  const { loadedCopy } = require('../memanto.cjs');
+  const h = env.tmpDir('memanto-home-');
+  const project = env.makeProject({ config: {} });
+  handCopyGlobal(h);
+  const { dir: projectDir } = plantProjectBundle(project);
+  const scopeDirs = { global: globalBundle(h), project: projectDir };
+  const roots = { gsdHome: h, projectRoot: project };
+  const rows = [
+    { id: 'memanto', scope: 'global', status: 'active' },
+    { id: 'memanto', scope: 'project', status: 'active' },
+  ];
+  for (const reason of [
+    'invalid hook fragment: memanto/contributions[0].fragment.path could not be read: missing-fragment.md',
+    'hook fragment could not be materialized: EACCES',
+    'cross-capability validation failed: x',
+    'cross-capability validation error: x',
+    'owns skill "x" already owned by another capability',
+    'owns command family "memanto" already owned by another capability',
+    'incompatible with GSD 1.20.1 (requires engines.gsd ">=9.0.0")',
+    'configHome confinement rejected: x',
+  ]) {
+    assert.deepEqual(loadedCopy({ rows, scopeDirs, roots, failures: [reason] }), { scope: 'project', dir: projectDir }, reason);
+  }
+  for (const reason of [
+    'failed validation: title must be a non-empty string',
+    'unreadable or invalid capability.json: x',
+    'id uses a reserved first-party prefix (gsd-/gsd-core-/anthropic-)',
+    'a reason this gsd-core version does not give',
+  ]) {
+    assert.deepEqual(loadedCopy({ rows, scopeDirs, roots, failures: [reason] }), { scope: 'unknown', dir: null, reasons: [reason] }, reason);
+  }
+  // A collision proves the global copy holds the id.
+  assert.equal(loadedCopy({ rows, scopeDirs, roots, failures: ['id collides with an already-registered capability'] }).scope, 'global');
+});
+
+// The reviewer's repro (modes fragment and validation): a global capability
+// install plus a consented project install, then the global manifest is broken
+// so gsd-core skips the global copy and loads the project one. The predicate
+// still runs the installed global scripts/gate.cjs, so gate-bundle is an error.
+function ledgeredGlobalSkipped(mode) {
+  const h = env.tmpDir('memanto-home-');
+  const project = emptyAgentProject();
+  env.installBundle({ home: h });
+  const bundle = projectInstall(project, h);
+  const file = path.join(globalBundle(h), 'capability.json');
+  const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (mode === 'fragment') {
+    manifest.contributions = [{ point: 'discuss:pre', into: 'orchestrator', produces: [], consumes: [], fragment: { path: 'missing-fragment.md' } }];
+  } else {
+    manifest.title = '';
+  }
+  fs.writeFileSync(file, JSON.stringify(manifest, null, 2));
+  const marker = path.join(project, 'GLOBAL-GATE-RAN');
+  const gate = path.join(globalBundle(h), 'scripts', 'gate.cjs');
+  const src = fs.readFileSync(gate, 'utf8');
+  const nl = src.startsWith('#!') ? src.indexOf('\n') + 1 : 0;
+  fs.writeFileSync(gate, `${src.slice(0, nl)}require('fs').writeFileSync(${JSON.stringify(marker)}, 'x');\n${src.slice(nl)}`);
+  return { h, project, bundle, marker };
+}
+
+for (const mode of ['fragment', 'validation']) {
+  test(`reviewer repro (${mode}): a ledgered global copy gsd-core skips makes gate-bundle an error naming both copies`, () => {
+    const { h, project, bundle, marker } = ledgeredGlobalSkipped(mode);
+    // The host loads the project copy, and its rendered gate runs the global gate.cjs.
+    runGate(project, h);
+    assert.equal(fs.existsSync(marker), true, 'the repro no longer runs the global gate.cjs');
+    const d = doctor(project, h, bundle);
+    assert.equal(d.status, 1, JSON.stringify(d.rep));
+    const gb = d.check('gate-bundle');
+    assert.equal(gb && gb.status, 'error', JSON.stringify(gb));
+    const loaded = d.check('loaded');
+    const dup = d.check('duplicate-install');
+    assert.ok(!dup.message.includes('gsd-core keeps the global one'), `duplicate-install claims the global copy: ${dup.message}`);
+    if (mode === 'fragment') {
+      // An invalid fragment is a reason only the global copy can get here.
+      assert.ok(gb.message.includes(`would run ${globalBundle(h)}/scripts/gate.cjs, but gsd-core loads the bundle at ${bundle}`), gb.message);
+      assert.ok(gb.message.includes('gsd-core skipped the global copy: invalid hook fragment'), gb.message);
+      assert.equal(loaded.status, 'ok', JSON.stringify(loaded));
+      assert.ok(loaded.message.includes(`gsd-core loads the project copy at ${bundle}`), loaded.message);
+    } else {
+      // A failed validation can belong to either copy: undetermined, never assumed.
+      for (const r of [gb, loaded]) {
+        assert.equal(r.status, 'error', JSON.stringify(r));
+        assert.ok(r.message.includes('doctor cannot tell whether it skipped the global copy'), r.message);
+        assert.ok(r.message.includes(globalBundle(h)) && r.message.includes(bundle), r.message);
+        assert.ok(r.message.includes('failed validation'), r.message);
+      }
+    }
+  });
+}
 
 test('a global install is still preferred over a project install, as gsd-core does', () => {
   const h = env.tmpDir('memanto-home-');
