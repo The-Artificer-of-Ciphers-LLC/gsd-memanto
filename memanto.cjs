@@ -269,7 +269,7 @@ const pinsOf = (cmd) => (String(cmd).match(PIN) || []).map((x) => x.slice('npm:@
 // not depend on the release version, so the release bump never touches it.
 // test/gate-bundle.test.cjs fails when capability.json changes the command
 // without updating this constant; test/release.test.cjs runs the bump.
-const SHIPPED_GATE_COMMAND_SHA256 = '718039219206da78b2b7ce250262212e9e547fc3889ed6ed08c38275df8cea68';
+const SHIPPED_GATE_COMMAND_SHA256 = '1de8fa5b64c3e3be8fc494dda8be63f329c741a9adcbc5f450f5e563396e8bc7';
 const sha256 = (s) => crypto.createHash('sha256').update(String(s), 'utf8').digest('hex');
 
 // The fields in which a rendered hook differs from the shipped gate:

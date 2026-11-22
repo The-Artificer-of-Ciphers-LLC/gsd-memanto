@@ -937,8 +937,6 @@ const R10L = {
       return true;
     },
     remedy: (ledger) => `inspect ${ledger} and restore it from a backup`,
-    // The inline predicate has no size cap yet, so it runs the global gate (IN-02 adds the cap).
-    gateBlocks: false,
   },
   gledgerjson: {
     break: (ledger) => {
@@ -972,10 +970,12 @@ for (const [mode, spec] of Object.entries(R10L)) {
     assert.ok(ur.fix.includes(spec.remedy(ledger)), ur.fix);
     assertDoctorConsistent(d, h, project, { stray: null, loadedScope: 'global' });
     // The gate fails closed: it blocks with [gate-bundle], it never runs the global gate.cjs.
-    if (spec.gateBlocks === false) return;
     const verdict = runGate(project, h, PREDICATE);
     assert.equal(verdict.block, true, JSON.stringify(verdict));
     assert.match(verdict.message, /\[gate-bundle\]/, verdict.message);
+    // Round-10 IN-02: and it never tells the user to delete the ledgered bundle by hand.
+    assert.ok(!/delete/.test(verdict.message), verdict.message);
+    assert.ok(verdict.message.includes('cannot be read'), verdict.message);
   });
 }
 
@@ -1046,10 +1046,10 @@ test('a global install is still preferred over a project install, as gsd-core do
 
 const COMMITTED = { id: 'memanto', version: MANIFEST.version, source: 'fixture', integrity: '', files: [], sharedEdits: [] };
 
-function fixtureScope(root, { manifest = true, manifestId = 'memanto', gate = true, entry, ledger } = {}) {
+function fixtureScope(root, { manifest = true, manifestId = 'memanto', gate = true, entry, ledger, manifestPad } = {}) {
   const dir = path.join(root, '.gsd', 'capabilities', 'memanto');
   fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
-  if (manifest) fs.writeFileSync(path.join(dir, 'capability.json'), JSON.stringify({ ...MANIFEST, id: manifestId }));
+  if (manifest) fs.writeFileSync(path.join(dir, 'capability.json'), JSON.stringify({ ...MANIFEST, id: manifestId, ...(manifestPad ? { pad: 'x'.repeat(manifestPad) } : {}) }));
   if (gate) fs.writeFileSync(path.join(dir, 'scripts', 'gate.cjs'), 'process.stdout.write("RAN:" + require("path").dirname(__dirname)); process.exit(0);\n');
   if (entry !== undefined) {
     fs.writeFileSync(path.join(root, '.gsd-capabilities.json'), JSON.stringify({ version: 1, updatedAt: 'x', entries: { memanto: entry } }));
@@ -1061,7 +1061,53 @@ function fixtureScope(root, { manifest = true, manifestId = 'memanto', gate = tr
     require('node:child_process').execFileSync('mkfifo', [lf]);
   }
   if (ledger === 'invalid') fs.writeFileSync(lf, '{"entries":');
+  if (ledger === 'big') fs.writeFileSync(lf, JSON.stringify({ version: 1, updatedAt: 'x', entries: { memanto: entry }, pad: 'x'.repeat(8 * 1024 * 1024) }));
 }
+
+// Round-10 IN-02: the inline predicate's [gate-bundle] text. A global copy a
+// ledger lists (or may list: the ledger cannot be read) is never deleted by
+// hand; only a copy with no ledger entry is.
+function predicateBlock(h, project) {
+  const res = spawnSync('sh', ['-c', PREDICATE.command], { cwd: project, encoding: 'utf8', env: { ...process.env, GSD_HOME: h }, timeout: 15000, killSignal: 'SIGKILL' });
+  assert.equal(res.error, undefined, `the predicate did not finish: ${res.error && res.error.code}`);
+  assert.equal(res.status, 1, `${res.stdout}${res.stderr}`);
+  assert.ok(res.stderr.includes('memanto: BLOCKED [gate-bundle]'), res.stderr);
+  return res.stderr;
+}
+
+const PREDICATE_TEXT = [
+  ['global ledger is a FIFO', { entry: COMMITTED, ledger: 'fifo' }, ['cannot be read', 'chmod u+rw'], ['delete']],
+  ['global ledger is not valid JSON', { entry: COMMITTED, ledger: 'invalid' }, ['cannot be read'], ['delete']],
+  ['global ledger over 8 MiB', { entry: COMMITTED, ledger: 'big' }, ['cannot be read'], ['delete']],
+  ['global entry pending', { entry: { ...COMMITTED, _pending: { op: 'install' } } }, ['lists it', `capability install npm:@taoc/gsd-memanto@${MANIFEST.version} --yes`], ['delete']],
+  ['global entry committed, capability.json is not id memanto', { entry: COMMITTED, manifestId: 'other' }, ['lists it', 'in place'], ['delete']],
+  ['global copy with no ledger entry (hand-copied)', {}, ['delete that directory by hand', 'no committed entry'], ['cannot be read']],
+];
+
+for (const [label, layout, want, never] of PREDICATE_TEXT) {
+  test(`the predicate's [gate-bundle] text: ${label}`, () => {
+    const h = env.tmpDir('memanto-home-');
+    const project = env.tmpDir('memanto-proj-');
+    fixtureScope(h, layout);
+    const text = predicateBlock(h, project);
+    for (const w of want) assert.ok(text.includes(w), `missing "${w}": ${text}`);
+    for (const n of never) assert.ok(!text.includes(n), `says "${n}": ${text}`);
+  });
+}
+
+// Round-10 IN-02: the predicate reads every file through a descriptor opened
+// O_NONBLOCK, checks it with fstat (regular file, size cap) and reads that
+// descriptor, never the path again, so a path swapped for a FIFO between a
+// check and the read cannot block it.
+test('the predicate reads files only through a non-blocking descriptor it checked with fstat', () => {
+  const cmd = PREDICATE.command;
+  assert.match(cmd, /openSync\([^)]*O_NONBLOCK/);
+  assert.match(cmd, /fstatSync\(/);
+  assert.ok(!/\.statSync\(/.test(cmd), 'a path-based statSync is a check-then-read race');
+  for (const m of cmd.matchAll(/readFileSync\(([^,)]+)/g)) assert.equal(m[1], 'd', `readFileSync reads ${m[1]}, not the checked descriptor`);
+  assert.match(cmd, /8388608/);
+  assert.match(cmd, /1048576/);
+});
 
 const MATRIX = [
   ['global valid', { global: { entry: COMMITTED } }, 'global'],
@@ -1076,6 +1122,9 @@ const MATRIX = [
   ['global entry missing version', { global: { entry: { ...COMMITTED, version: undefined } }, project: { entry: COMMITTED } }, null],
   ['global manifest with another id', { global: { manifestId: 'other', entry: COMMITTED }, project: { entry: COMMITTED } }, null],
   ['project entry missing files', { project: { entry: { ...COMMITTED, files: undefined } } }, null],
+  // Round-10 IN-02: the predicate reads with the lib's size caps (8 MiB ledger, 1 MiB capability.json).
+  ['global ledger over 8 MiB, project ledgered', { global: { entry: COMMITTED, ledger: 'big' }, project: { entry: COMMITTED } }, null],
+  ['global capability.json over 1 MiB, project ledgered', { global: { entry: COMMITTED, manifestPad: 1024 * 1024 }, project: { entry: COMMITTED } }, null],
   // Round-10 WR-01: an unreadable ledger never selects that scope, and never falls back.
   ['global ledger is a FIFO, project ledgered', { global: { entry: COMMITTED, ledger: 'fifo' }, project: { entry: COMMITTED } }, null],
   ['global ledger is not valid JSON, project ledgered', { global: { entry: COMMITTED, ledger: 'invalid' }, project: { entry: COMMITTED } }, null],
