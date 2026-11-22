@@ -234,5 +234,10 @@ test('a global install is still preferred over a project install, as gsd-core do
   const bundle = projectInstall(project, h);
   // Make the two copies distinguishable: the project gate would pass.
   fs.writeFileSync(path.join(bundle, 'scripts', 'gate.cjs'), 'process.exit(0);\n');
-  assert.equal(runGate(project, h, PREDICATE).block, true, 'the project gate ran instead of the global one');
+  const verdict = runGate(project, h, PREDICATE);
+  assert.equal(verdict.block, true, 'the project gate ran instead of the global one');
+  // Round-2 IN-03: the block must come from the global gate's own checks, not
+  // from a [gate-bundle] block that rejected both scopes.
+  assert.match(verdict.message, /memanto: BLOCKED \[agent-id\]/, verdict.message);
+  assert.doesNotMatch(verdict.message, /\[gate-bundle\]/, verdict.message);
 });
