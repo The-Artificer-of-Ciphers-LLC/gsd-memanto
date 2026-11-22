@@ -1,21 +1,21 @@
 ---
 phase: 01-walking-skeleton
-fixed_at: 2026-11-22T03:41:23Z
+fixed_at: 2026-11-22T05:10:00Z
 review_path: .planning/phases/01-walking-skeleton/01-REVIEW.md
-iteration: 7
-findings_in_scope: 4
-fixed: 4
+iteration: 8
+findings_in_scope: 5
+fixed: 5
 skipped: 0
 status: all_fixed
 ---
 
-# Phase 1: Code Review Fix Report (rounds 4 to 7)
+# Phase 1: Code Review Fix Report (rounds 4 to 8)
 
-The frontmatter counts are for round 7 (the current 01-REVIEW.md): 4 findings, all fixed. See "Round 7" at the end. The round-4 report, its owner follow-ups and the round-5 and round-6 sections are kept below unchanged. Round 7 replaced the round-5 and round-6 doctor code they describe (`loadedCopy`, `notLoadedText`, `notLoadedFix`, `loadedCheck`, `gateBundleCheck`).
+The frontmatter counts are for round 8 (the current 01-REVIEW.md): 5 findings, all fixed. See "Round 8" at the end. Round 8 replaced the round-7 classifier evidence and states described in "Round 7". The round-4 report, its owner follow-ups and the round-5 and round-6 sections are kept below unchanged. Round 7 replaced the round-5 and round-6 doctor code they describe (`loadedCopy`, `notLoadedText`, `notLoadedFix`, `loadedCheck`, `gateBundleCheck`).
 
-**Fixed at:** 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5), 2026-11-22T03:21:45Z (round 6), 2026-11-22T03:41:23Z (round 7)
-**Source review:** .planning/phases/01-walking-skeleton/01-REVIEW.md, which is now round 7, the re-review of the round-6 fixes. Earlier rounds: round 4 re-reviewed the round-3 fixes, round 5 the round-4 fixes and owner follow-ups, and round 6 the round-5 fixes.
-**Iteration:** 4, then 5, 6 and 7
+**Fixed at:** 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5), 2026-11-22T03:21:45Z (round 6), 2026-11-22T03:41:23Z (round 7), 2026-11-22T05:10:00Z (round 8)
+**Source review:** .planning/phases/01-walking-skeleton/01-REVIEW.md, which is now round 8, the re-review of the round-7 fixes. Round 7 re-reviewed the round-6 fixes. Earlier rounds: round 4 re-reviewed the round-3 fixes, round 5 the round-4 fixes and owner follow-ups, and round 6 the round-5 fixes.
+**Iteration:** 4, then 5, 6, 7 and 8
 
 Earlier rounds:
 - Round 1 (14 findings, all fixed): commits `851e2c2..d684020`.
@@ -265,8 +265,81 @@ A table row now covers the mixed case: a validation failure plus a squat. It ass
   The reviewer's `r7.cjs` and `collide.cjs`, run against this worktree, give the same records, and doctor exits 1 in every mode.
 - **Drift test.** `test/loader-drift.test.cjs` now names `lib/install-state.cjs classifyInstall`. It also checks that the classifier applies the loader facts: with two copies and a hook rendered, each `POST_COLLISION` reason gives `project-loaded`, `id collides` gives `global-loaded`, and pre-collision reasons give `undetermined`. It passes on gsd-core 1.20.1 and 1.22.0. It fails on all six mutated loaders: early, swap, newreason, rootorder, earlyadd and moveadd.
 
+## Round 8
+
+Round 8 fixes the five findings of the round-8 re-review (CR-01, WR-01, WR-02, WR-03, IN-01). The four code findings had one cause: `gatherEvidence` did not collect facts the loader acts on, so they are fixed in one change to the evidence and the classifier. The tests came first.
+
+| Commit | What |
+|--------|------|
+| `3d28aa3` | test(01): the WR-03 invariants and the r8 repros. Against the round-7 code these tests fail 55 times. |
+| `e5ed361` | fix(01): CR-01, WR-01, WR-02 and IN-01 in `lib/install-state.cjs`, `lib/gate-bundle.cjs`, `memanto.cjs` and `README.md`. |
+
+`npm test`: 488 tests, 487 pass, 0 fail, 1 skipped. The gates ran in the harness worktree `.claude/worktrees/agent-a4925451f902d53d9` (not the main checkout), with a temp `GSD_HOME` per test.
+
+### CR-01: doctor said loaded ok and gate-bundle ok when no memanto gate rendered
+
+- `declaredPoints` now renders `discuss:pre`, every point the doctor's own shipped `capability.json` declares, and the points the installed manifests declare. An installed manifest with `gates: []` can no longer hide the gate point.
+- `render:discuss:pre` is ok only when a memanto hook of kind `gate` renders there.
+- The evidence has `render.gate`. `loaded` and `gate-bundle` are ok only with it. A copy gsd-core accepted that renders no gate is `global-loaded-no-gate` or `project-loaded-no-gate` (error).
+- With memanto enabled and no successful render, the state is `no-render-evidence`, an error that only hedges which copy the loader would pick.
+- The impossible state at round-7 `:135`: an activated project copy that declares the gate, a rendered hook and no `id collides` is `project-loaded` (the accepted global copy would have made the project copy print `id collides`). When the project copy declares no gate, the state is `undetermined`.
+- Repros: `gnogate` now gives `loaded`, `render:discuss:pre` and `gate-bundle` errors with "its capability.json declares no discuss:pre gate" and a reinstall-in-place fix. `twonogate` gives `global-loaded-no-gate`. `twoinvalid` gives `loaded` ok (the project copy loaded and its gate renders) and `gate-bundle` error: "the discuss:pre gate would run <global>/scripts/gate.cjs, but gsd-core loads the bundle at <project>".
+
+### WR-01: a ledgered install with an unreadable manifest was called loaded, stray, and deleted by hand
+
+- `lib/gate-bundle.cjs` adds `ledgerState(root)` (`committed`, `pending` or `none`) and `readManifest(root)`. The gate's own selection rule, `resolveGateBundle`, is unchanged and stays fail-closed for both cases.
+- New states: `broken-install` (committed ledger entry, unreadable manifest; fix: "reinstall the <scope> copy in place ... [--scope project]") and `install-pending` (an `_pending` entry; fix: "finish or roll back the interrupted <scope> install of memanto").
+- Stray detection, the "no ledger entry" text and `deleteFix` use the ledger: a ledgered copy is never stray and is reinstalled in place, never deleted by hand. `consent` reports a ledgered copy that `capability list` does not show.
+- A silent skip (no reason, no hook) uses the unexplained wording for either scope, never "loaded".
+- Repros: `gcorrupt` and `gpending` give `loaded` and `gate-bundle` errors with those fixes, no "stray" and no delete.
+
+### WR-02: GSD_HOME at the project root was modelled as a trusted global copy; symlink aliases were two copies
+
+- `memanto.cjs rootsAlias` mirrors `overlayRoots` (`capability-loader.cjs` 1.20.1 `:259-290`). It compares the two `.gsd/capabilities` roots by `fs.realpathSync`, treats a realpath failure as an alias, and demotes the global root to project scope when the project root has `.planning` or `.git`, unless the roots are provably distinct.
+- The classifier models that one directory as a single project-scope copy, so `project-not-activated` and the re-consent fix apply in `loaded`, `gate-bundle` and `consent` alike. The capability-list "active in global scope" prefix is dropped for one physical directory.
+- Repros: `homeplain` and `homesym` give one copy, `duplicate-install` ok, and "re-consent by reinstalling in the project: ... --scope project" in all three records. `homeproj` now names the project copy.
+- `test/loader-drift.test.cjs` pins the demotion: realpath canonicalization, `hasGenuineProjectMarker(projectRoot)` with `.planning` and `.git`, `provablyDistinct = !globalCanon.realpathFailed && ...`, and `if (!provablyDistinct) globalScope = 'project'`. It passes on gsd-core 1.20.1 and 1.22.0 and fails on a 1.20.1 copy whose overlayRoots no longer demotes.
+
+### WR-03: the invariants checked the classifier against itself
+
+- The table derives every fact from the raw case (`factsOf`) and from a new `loaded` column in each case definition. The doctor tests derive them from the disk, from a `render-hooks` call of their own, and from the case (`loadedScope`). `assertDoctorConsistent` now passes `loadedScope` and `gateRendered` and requires `render:discuss:pre` to agree with the host.
+- New shared rules in `test/helpers/install-invariants.cjs`:
+  - positive evidence: without the memanto gate at `discuss:pre`, `loaded` and `gate-bundle` are never ok, and are errors when memanto is enabled;
+  - cross-record: every record names the same loaded copy ("loads/loaded/keeps the <scope> ...", "loads memanto from <dir>", "loaded neither"), and it matches the case's loaded copy; hedged predictions are not claims;
+  - `gate-bundle` ok only when the predicate runs the loaded copy, and ok in `gate-bundle` implies ok in `loaded`;
+  - re-consent in `consent` implies re-consent in a not-ok `loaded` (the code now appends re-consent to every not-loaded fix when `capability list` reports a missing consent record);
+  - an unledgered copy is never `consent` ok; a ledgered directory is never deleted or called stray; with one copy, no record names a copy in the other scope.
+- `MD` is kept as a regression test: the cross-record rule rejects `duplicate-install` saying "neither" while `loaded` names the global copy.
+- Mutation run (`scratchpad/r8/mutate8.cjs`, temp copies of the working tree). Each mutant runs the table with every per-case assertion stripped (only the shared rules can fail; the stripped unmutated table fails 0), then the full table plus the doctor repros (unmutated: 0 failures). All 15 mutants are caught:
+
+| Mutant | What it breaks | Shared-rules table failures | Full run failures |
+|--------|----------------|-----------------------------|-------------------|
+| MD | duplicate-install says "neither" for global-loaded-no-gate | 3 | 5 |
+| ME | gate-bundle mismatch downgraded to warn | 4 | 7 |
+| MG | loaded and gate-bundle not-loaded errors downgraded to warn | 26 | 41 |
+| MH | consent ok for a copy with no ledger row | 5 | 5 |
+| MI | loaded fix for an unconsented copy is a global reinstall | 4 | 6 |
+| MJ | CR-01 `:135` reverted (project copy assumed global) | 1 | 2 |
+| MK | loaded without the gate rendering | 1 | 1 |
+| MN | no render evidence classified as loaded from the ledger | 1 | 1 |
+| MO | gate-bundle ok for a copy that renders no gate | 5 | 7 |
+| ML | a broken or pending install treated as stray | 4 | 6 |
+| MR | a ledgered copy deleted by hand | 1 | 1 |
+| MM | the GSD_HOME-is-project copy modelled as global | 4 | 7 |
+| MS | IN-01 hedge removed | 1 | 2 |
+| MQ | `memanto.cjs` sameDir by path.resolve, not realpath | 0 (not in the table) | 1, the doctor shared rule "says both with one copy" (homesym) |
+| MP | `memanto.cjs` renders only the installed manifest's points | 0 (not in the table) | 3, the doctor shared rule "doctor did not render discuss:pre" |
+
+### IN-01: gate-bundle claimed a load without render evidence
+
+`gate-bundle` now uses the hedge whenever no copy is known to have loaded: "by the loader's precedence gsd-core would load memanto from <dir>". With memanto enabled that state is an error (`no-render-evidence`, or `install-pending` for `gpending`). With memanto disabled `gate-bundle` is a warn, never ok. `loaded` is now printed whenever gsd-core is located and memanto is enabled, also when `capability list` fails, and render-hooks still runs in that case.
+
+### Not changed
+
+The reviewer's `r8.cjs` also has a `gtamper` mode (the global `scripts/gate.cjs` replaced after install). It is not one of the five findings: global bundles are not hash-bound by gsd-core, and doctor reports the gate as rendering and running the installed bundle. It is left as it is.
+
 ---
 
-_Fixed: 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5), 2026-11-22T03:21:45Z (round 6), 2026-11-22T03:41:23Z (round 7)_
+_Fixed: 2026-11-22T02:31:45Z (round 4), 2026-11-22T03:11:38Z (round 5), 2026-11-22T03:21:45Z (round 6), 2026-11-22T03:41:23Z (round 7), 2026-11-22T05:10:00Z (round 8)_
 _Fixer: Claude (gsd-code-fixer)_
-_Iteration: 7_
+_Iteration: 8_

@@ -175,24 +175,27 @@ function enginesCheck(rows, scopeDirs, hostVersion) {
   );
 }
 
-// Points declared by the installed manifest (or this bundle's own when none is installed).
-function declaredPoints(rows, scopeDirs) {
-  const active = rows.find((r) => r.status === 'active');
-  const order = [active && scopeDirs[active.scope], scopeDirs.global, scopeDirs.project].filter(Boolean);
-  let manifest = null;
-  for (const dir of order) {
-    manifest = readJson(path.join(dir, 'capability.json'));
-    if (manifest) break;
-  }
-  if (!manifest) manifest = readJson(OWN_MANIFEST) || {};
-  const points = [];
+function pointsOf(manifest, points) {
   for (const kind of ['gates', 'steps', 'contributions']) {
-    for (const h of Array.isArray(manifest[kind]) ? manifest[kind] : []) {
+    for (const h of manifest && Array.isArray(manifest[kind]) ? manifest[kind] : []) {
       if (h && typeof h.point === 'string' && !points.includes(h.point)) points.push(h.point);
     }
   }
   return points;
 }
+
+// Round-8 CR-01: the points to render are discuss:pre, every point THIS
+// doctor's own shipped manifest declares, and every point the installed
+// manifests declare. An installed manifest with "gates": [] can no longer hide
+// the gate point, so a missing gate always shows as a render error.
+function declaredPoints(scopeDirs) {
+  const points = ['discuss:pre'];
+  pointsOf(readJson(OWN_MANIFEST), points);
+  for (const dir of [scopeDirs.global, scopeDirs.project]) pointsOf(readJson(path.join(dir, 'capability.json')), points);
+  return points;
+}
+
+const isMemantoGate = (h) => Boolean(h && h.capId === 'memanto' && h.kind === 'gate');
 
 function loadFailureReason(rh) {
   const lines = [...rh.warnings, ...String(rh.stderr || '').split('\n')];
@@ -207,10 +210,12 @@ function renderCheck(point, rh) {
   if (!rh.ok) {
     return record(id, 'error', clean(`loop render-hooks ${point} failed: ${rh.reason}`, REASON_MAX), 'run gsd_run loop render-hooks to see the host error');
   }
-  if (rh.hooks.some((h) => h && h.capId === 'memanto')) return record(id, 'ok', `memanto renders at ${point}`, '');
+  if (point === 'discuss:pre' && rh.hooks.some(isMemantoGate)) return record(id, 'ok', 'the memanto gate renders at discuss:pre', '');
+  if (point !== 'discuss:pre' && rh.hooks.some((h) => h && h.capId === 'memanto')) return record(id, 'ok', `memanto renders at ${point}`, '');
   const reason = loadFailureReason(rh);
   const why = reason ? ` (host: ${clean(reason, REASON_MAX)})` : '';
-  return record(id, 'error', `no memanto hook renders at ${point}; it is not enforced (fails open)${why}`, renderFix(reason, reinstallFix()));
+  const what = point === 'discuss:pre' ? 'no memanto gate renders at discuss:pre' : `no memanto hook renders at ${point}`;
+  return record(id, 'error', `${what}; it is not enforced (fails open)${why}`, renderFix(reason, reinstallFix()));
 }
 
 // Every "capability "memanto" failed to load (<reason>)" warning gsd-core
@@ -244,23 +249,73 @@ function loadFailureReasons(renders) {
   return reasons;
 }
 
-// Round-7: everything lib/install-state.cjs classifies, read once. rows is
+function canonical(dir) {
+  try {
+    return { path: fs.realpathSync(dir), failed: false, enoent: false };
+  } catch (e) {
+    return { path: path.resolve(dir), failed: true, enoent: e && (e.code === 'ENOENT' || e.code === 'ENOTDIR') };
+  }
+}
+
+function hasProjectMarker(root) {
+  try {
+    if (fs.statSync(path.join(root, '.planning')).isDirectory()) return true;
+  } catch {
+    /* fall through */
+  }
+  return fs.existsSync(path.join(root, '.git'));
+}
+
+// Round-8 WR-02: mirror gsd-core overlayRoots (capability-loader.cjs 1.20.1
+// :259-290). The two capability roots are one copy when they canonicalize
+// equal (a symlinked GSD_HOME included). With a genuine project root (.planning
+// or .git) the global root is demoted to consent-required project scope unless
+// it is provably a different physical directory.
+function rootsAlias(roots) {
+  const g = canonical(path.join(roots.gsdHome, '.gsd', 'capabilities'));
+  const p = canonical(path.join(roots.projectRoot, '.gsd', 'capabilities'));
+  const sameDir = !g.failed && !p.failed ? g.path === p.path : path.resolve(g.path) === path.resolve(p.path);
+  let demoted = false;
+  if (hasProjectMarker(roots.projectRoot) && !(p.failed && p.enoent)) {
+    demoted = !(!g.failed && !p.failed && g.path !== p.path);
+  }
+  return { sameDir, demoted };
+}
+
+function sameReal(a, b) {
+  return canonical(a).path === canonical(b).path;
+}
+
+// Round-7/8: everything lib/install-state.cjs classifies, read once. rows is
 // null when capability list could not be read; renders are the successful
-// render-hooks results (none when memanto is disabled or nothing rendered).
+// render-hooks results as { point, rh } (none when memanto is disabled or
+// nothing rendered).
 function gatherEvidence({ scopeDirs, roots, rows, renders, enabled = true }) {
-  const gate = (dir) => isFile(path.join(dir, 'scripts', 'gate.cjs'));
+  const rootOf = { global: roots.gsdHome, project: roots.projectRoot };
+  const per = (fn) => ({ global: fn('global'), project: fn('project') });
+  const manifests = per((s) => gateBundle.readManifest(rootOf[s]));
+  const alias = rootsAlias(roots);
+  const runs = gateBundle.resolveGateBundle(roots);
+  let gateRuns = null;
+  if (runs) gateRuns = sameReal(runs, scopeDirs.global) ? 'global' : sameReal(runs, scopeDirs.project) ? 'project' : null;
+  const rhs = renders.map((r) => r.rh);
   return {
     dirs: scopeDirs,
-    manifest: { global: gateBundle.hasManifest(roots.gsdHome), project: gateBundle.hasManifest(roots.projectRoot) },
-    gateFile: { global: gate(scopeDirs.global), project: gate(scopeDirs.project) },
-    installed: { global: gateBundle.isInstalledBundle(roots.gsdHome), project: gateBundle.isInstalledBundle(roots.projectRoot) },
-    gateRuns: gateBundle.resolveGateBundle(roots),
+    sameDir: alias.sameDir,
+    demoted: alias.demoted,
+    manifest: per((s) => gateBundle.hasManifest(rootOf[s])),
+    manifestOk: per((s) => Boolean(manifests[s])),
+    declaresGate: per((s) => Boolean(manifests[s] && Array.isArray(manifests[s].gates) && manifests[s].gates.some((x) => x && x.point === 'discuss:pre'))),
+    gateFile: per((s) => isFile(path.join(scopeDirs[s], 'scripts', 'gate.cjs'))),
+    ledger: per((s) => gateBundle.ledgerState(rootOf[s])),
+    gateRuns,
     rows,
     render: {
       ran: renders.length > 0,
-      hook: renders.some((rh) => rh.hooks.some((h) => h && h.capId === 'memanto')),
+      hook: rhs.some((rh) => rh.hooks.some((h) => h && h.capId === 'memanto')),
+      gate: renders.some((r) => r.point === 'discuss:pre' && r.rh.hooks.some(isMemantoGate)),
     },
-    reasons: renders.length ? loadFailureReasons(renders) : [],
+    reasons: renders.length ? loadFailureReasons(rhs) : [],
     enabled,
   };
 }
@@ -321,12 +376,12 @@ function collectChecks(cwd) {
     } else {
       listOk = true;
       rows = list.rows.filter((r) => r && r.id === 'memanto');
-      if (enabled) {
-        for (const point of declaredPoints(rows, scopeDirs)) {
-          const rh = host.renderHooksAt(located.tools, point, opts);
-          if (rh.ok) renders.push(rh);
-          renderChecks.push(renderCheck(point, rh));
-        }
+    }
+    if (enabled) {
+      for (const point of declaredPoints(scopeDirs)) {
+        const rh = host.renderHooksAt(located.tools, point, opts);
+        if (rh.ok) renders.push({ point, rh });
+        renderChecks.push(renderCheck(point, rh));
       }
     }
   }
@@ -337,12 +392,12 @@ function collectChecks(cwd) {
   const recs = installRecords(cls, { version: ownVersion(), reinstall: reinstallFix(), clean: cleanFactor });
 
   if (listFailure) checks.push(listFailure);
+  if (located.ok && enabled) checks.push(recs.loaded);
   if (listOk) {
-    if (enabled) checks.push(recs.loaded);
     checks.push(recs.consent);
     checks.push(enginesCheck(rows, scopeDirs, located.version));
-    checks.push(...renderChecks);
   }
+  checks.push(...renderChecks);
   checks.push(recs.duplicate);
   checks.push(recs.gateBundle);
   checks.push(discussBypassCheck(cfg));
