@@ -191,7 +191,7 @@ const CASES = [
     for (const k of ['loaded', 'gateBundle']) {
       assert.equal(r[k].status, 'error', JSON.stringify(r[k]));
       assert.ok(r[k].message.includes('declares no discuss:pre gate'), r[k].message);
-      assert.ok(r[k].fix.includes('reinstall the global copy in place'), r[k].fix);
+      assert.ok(r[k].fix.includes(`reinstall the global copy at ${D.global} in place at this release`), r[k].fix);
     }
   }],
   ['two installs, the global declares no gate and holds the id (r8 twonogate)', { g: true, p: true, gInst: true, pInst: true, gNoGate: true, rows: [row(G), row(P)], reasons: [COLL] }, STATES.GLOBAL_NO_GATE, G, (r) => {
@@ -200,6 +200,9 @@ const CASES = [
     // Round-9 WR-03: the load error comes first, and the healthy project install is kept.
     assert.ok(r.duplicate.fix.startsWith('fix the load error first (see loaded)'), r.duplicate.fix);
     assert.ok(r.duplicate.fix.includes(`the global copy at ${D.global}`) && r.duplicate.fix.includes('in place'), r.duplicate.fix);
+    // Round-9 IN-03.
+    for (const k of ['loaded', 'gateBundle', 'duplicate']) assert.ok(!r[k].fix.includes('memanto.enabled'), `${k}: ${r[k].fix}`);
+    assert.ok(r.loaded.fix.startsWith(`reinstall the global copy at ${D.global} in place at this release (its capability.json declares no discuss:pre gate)`), r.loaded.fix);
     assert.ok(r.duplicate.fix.includes(`keep the project copy at ${D.project}`), r.duplicate.fix);
   }],
   ['two installs, the global is silently rejected and the project gate renders (r8 twoinvalid)', { g: true, p: true, gInst: true, pInst: true, gNoGate: true, rows: [row(G), row(P)], hook: true }, STATES.PROJECT_LOADED, P, (r) => {
@@ -213,6 +216,11 @@ const CASES = [
   }],
   ['global install renders a hook elsewhere but no gate', { g: true, gInst: true, rows: [row(G)], hook: true, gate: false }, STATES.GLOBAL_NO_GATE, G, (r) => {
     assert.ok(r.loaded.message.includes('renders no memanto gate at discuss:pre'), r.loaded.message);
+    // Round-9 IN-03: gsd-core loaded the copy, so memanto.enabled is not the cause.
+    for (const k of ['loaded', 'gateBundle']) {
+      assert.ok(!r[k].fix.includes('memanto.enabled'), r[k].fix);
+      assert.ok(r[k].fix.startsWith(`reinstall the global copy at ${D.global} in place at this release`), r[k].fix);
+    }
   }],
   // Round-9 WR-01: a memanto gate renders, but it is not the shipped one.
   ['installed global gate does not match this release (r9 gexit0)', { g: true, gInst: true, rows: [row(G)], hook: true, gate: false, mismatch: 'command' }, STATES.GLOBAL_NO_GATE, G, (r) => {

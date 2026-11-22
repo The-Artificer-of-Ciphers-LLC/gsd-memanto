@@ -14,7 +14,7 @@ const { cap, CONTROL_CHARS } = require('./lib/health.cjs');
 const host = require('./lib/gsd-host.cjs');
 const gateBundle = require('./lib/gate-bundle.cjs');
 const { readJsonOrNull, MANIFEST_MAX_BYTES } = require('./lib/safe-read.cjs');
-const { classifyInstall, installRecords, renderFix, STATES, POST_COLLISION, POST_COLLISION_REASONS } = require('./lib/install-state.cjs');
+const { classifyInstall, installRecords, renderFix, reasonClass, REASON_CLASSES, STATES, POST_COLLISION, POST_COLLISION_REASONS } = require('./lib/install-state.cjs');
 
 const USAGE = 'Usage: gsd_run memanto doctor [--raw]';
 const DIRECT_FORM = 'node "${GSD_HOME:-$HOME}/.gsd/capabilities/memanto/memanto.cjs" doctor';
@@ -289,10 +289,13 @@ function loadFailureReason(rh) {
   return m ? m[1] : line;
 }
 
-function renderCheck(rawPoint, rh, shipped) {
+// loadedFix: the loaded record's fix (the remedy for the copy it names), used
+// when gsd-core reported no load error (round-9 IN-03).
+function renderCheck(rawPoint, rh, shipped, loadedFix) {
   // Round-9 WR-02: the point is cleaned before it reaches the id or a message.
   const point = clean(rawPoint, 64);
   const id = `render:${point}`;
+  const remedy = loadedFix || reinstallFix();
   if (!rh.ok) {
     return record(id, 'error', clean(`loop render-hooks ${point} failed: ${rh.reason}`, REASON_MAX), 'run gsd_run loop render-hooks to see the host error');
   }
@@ -302,14 +305,16 @@ function renderCheck(rawPoint, rh, shipped) {
       id,
       'error',
       `the installed memanto gate at discuss:pre does not match this release: ${gateMismatchAt(rh, shipped)}; it is not enforced as shipped (fails open)`,
-      `reinstall the copy gsd-core loads in place at this release: ${reinstallFix().replace(/^reinstall: /, '')}`,
+      remedy,
     );
   }
   if (point !== 'discuss:pre' && rh.hooks.some((h) => h && h.capId === 'memanto')) return record(id, 'ok', `memanto renders at ${point}`, '');
   const reason = loadFailureReason(rh);
   const why = reason ? ` (host: ${clean(reason, REASON_MAX)})` : '';
   const what = point === 'discuss:pre' ? 'no memanto gate renders at discuss:pre' : `no memanto hook renders at ${point}`;
-  return record(id, 'error', `${what}; it is not enforced (fails open)${why}`, renderFix(reason, reinstallFix()));
+  // "id collides" is not a load error of the copy gsd-core kept: its remedy applies.
+  const loadError = reason && reasonClass(reason) !== REASON_CLASSES.COLLISION;
+  return record(id, 'error', `${what}; it is not enforced (fails open)${why}`, loadError ? renderFix(reason, reinstallFix()) : remedy);
 }
 
 // Every "capability "memanto" failed to load (<reason>)" warning gsd-core
@@ -458,7 +463,7 @@ function collectChecks(cwd) {
   let rows = null;
   let listOk = false;
   const renders = [];
-  const renderChecks = [];
+  const rendered = [];
 
   const located = host.locateGsdTools({ env, mainFilename: require.main && require.main.filename });
   checks.push(locatedCheck(located));
@@ -489,10 +494,10 @@ function collectChecks(cwd) {
     if (enabled) {
       const renderAll = (points) => {
         for (const point of points) {
-          if (renders.some((r) => r.point === point) || renderChecks.some((c) => c.id === `render:${point}`)) continue;
+          if (rendered.some((r) => r.point === point)) continue;
           const rh = host.renderHooksAt(located.tools, point, opts);
           if (rh.ok) renders.push({ point, rh });
-          renderChecks.push(renderCheck(point, rh, shipped));
+          rendered.push({ point, rh });
         }
       };
       // Round-9 WR-02: first discuss:pre and the doctor's own points; then the
@@ -510,6 +515,9 @@ function collectChecks(cwd) {
   const cls = classifyInstall(gatherEvidence({ scopeDirs, roots, rows, renders, enabled, manifests, shipped }));
   const recs = installRecords(cls, { version: ownVersion(), reinstall: reinstallFix(), clean: cleanFactor });
   const unreadable = unreadableCheck(scopeDirs, roots, ownVersion());
+  // Round-9 IN-03: built after the classification, so a no-reason render fix
+  // is the loaded record's own remedy (the reinstall of the copy it names).
+  const renderChecks = rendered.map((r) => renderCheck(r.point, r.rh, shipped, recs.loaded.fix));
 
   if (listFailure) checks.push(listFailure);
   if (unreadable) checks.push(unreadable);

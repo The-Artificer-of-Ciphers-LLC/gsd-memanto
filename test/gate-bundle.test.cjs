@@ -684,10 +684,17 @@ for (const mode of Object.keys(R8)) {
       // The doctor's own manifest declares the gate, so discuss:pre is always rendered.
       const rd = d.check('render:discuss:pre');
       assert.equal(rd.status, mode === 'twoinvalid' ? 'ok' : 'error', JSON.stringify(rd));
+      // Round-9 IN-03: no load error was reported, so the fix is the reinstall of the loaded copy.
+      if (mode !== 'twoinvalid') {
+        assert.ok(!/load error/.test(rd.fix), rd.fix);
+        assert.ok(!/memanto\.enabled/.test(rd.fix), rd.fix);
+        assert.ok(rd.fix.includes(`reinstall the global copy at ${globalBundle(h)} in place at this release`), rd.fix);
+        for (const r of [loaded, gb]) assert.ok(!/memanto\.enabled/.test(r.fix), `${r.id}: ${r.fix}`);
+      }
     }
     if (mode === 'gnogate') {
       assert.ok(loaded.message.includes('declares no discuss:pre gate'), loaded.message);
-      assert.ok(loaded.fix.includes('reinstall the global copy in place'), loaded.fix);
+      assert.ok(loaded.fix.includes(`reinstall the global copy at ${globalBundle(h)} in place at this release`), loaded.fix);
     }
     if (mode === 'twonogate') {
       assert.ok(d.check('duplicate-install').message.includes('gsd-core keeps the global one, which renders no memanto gate'), d.check('duplicate-install').message);
