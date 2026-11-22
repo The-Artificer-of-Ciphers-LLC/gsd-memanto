@@ -1,8 +1,14 @@
 name: Release
 
-# One manual trigger does the whole release: it bumps the version (in package.json and capability.json), updates the
-# changelog, tests against the gsd-core host, stages the release to npm, then commits the bump and tags it on main,
+# One manual trigger does the whole release: it tests against the gsd-core host, bumps the version (in package.json
+# and capability.json), updates the changelog, stages the release to npm, then commits the bump and tags it on main,
 # then waits for the approval and creates the GitHub Release. Nothing releases automatically; pushing a tag does not.
+#
+# The tests run in their own job with a read-only token and no environment, because they run code fetched from npm
+# (the gsd-core host) and the repo's own test code. The release job, which holds contents: write and id-token: write,
+# starts from a fresh runner once the tests pass and runs no repo code: no npm lifecycle script (--ignore-scripts)
+# and no test. Code from the test job therefore cannot reach the push credential or the OIDC token through
+# .git/hooks, .git/config, ~/.gitconfig, $GITHUB_ENV or $GITHUB_PATH.
 #
 # The file is called publish.yml because the npm trusted publisher is bound to that file name (and to the
 # npm-publish environment below). Renaming either one means re-creating the trusted publisher. The npmjs.com form
@@ -49,7 +55,46 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Read-only on purpose: the read scope below is its only permission, and it has no environment (see the top).
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # No npm cache: the package has zero dependencies and no lockfile.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      # The suite drives the real host, so the release is tested against the engines.gsd floor. The host is installed
+      # outside the repo, at an exact version, with install scripts disabled, and is never part of the package.
+      - name: Install the gsd-core host
+        shell: bash
+        env:
+          GSD_VERSION: "1.20.1"
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/gsd-core" --no-audit --no-fund --ignore-scripts "@opengsd/gsd-core@$GSD_VERSION"
+          echo "GSD_CORE_DIR=$RUNNER_TEMP/gsd-core/node_modules/@opengsd/gsd-core/gsd-core" >> "$GITHUB_ENV"
+
+      # npm test (tools/run-tests.cjs) fails the step when one test or fewer ran, so no second count check is needed.
+      - name: Test
+        shell: bash
+        env:
+          MEMANTO_SPIKE_INSTALLER: "1"
+        run: |
+          npm test
+
+      - name: Show what would be published
+        run: npm pack --dry-run --ignore-scripts
+
   release:
+    needs: test
     runs-on: ubuntu-latest
     # The last step waits up to 30 minutes for the staged version to be approved on npm.
     timeout-minutes: 45
@@ -63,14 +108,14 @@ jobs:
       checks: read
       # Lets npm exchange this run's OIDC identity for a short-lived credential, and sign provenance.
       id-token: write
-    # The GitHub token is passed only to the steps that call GitHub (gh api, git push, gh release), never to the
-    # steps that run npm or the test suite.
+    # The GitHub token is passed only to the steps that call GitHub (gh api, the push step, gh release), never to the
+    # steps that run npm. The test suite runs in the test job above, never in this job.
     env:
       BUMP: ${{ inputs.bump }}
       NOTES: ${{ inputs.notes }}
     steps:
-      # persist-credentials: false keeps the contents:write token out of .git/config while the tests run code
-      # fetched from npm. The commit and tag step supplies the credential for its own push only.
+      # persist-credentials: false keeps the contents:write token out of .git/config. The push step supplies the
+      # credential for its own two pushes only.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -121,7 +166,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm version "$BUMP" --no-git-tag-version
+          npm version "$BUMP" --no-git-tag-version --ignore-scripts
           version="$(node -p "require('./package.json').version")"
           if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
             echo "tag v$version already exists" >&2
@@ -131,11 +176,16 @@ jobs:
           node <<'NODE'
           const fs = require("node:fs");
           const v = require("./package.json").version;
-          // Replace only the top-level version string so the rest of the manifest keeps its formatting.
-          const text = fs.readFileSync("capability.json", "utf8");
-          fs.writeFileSync("capability.json", text.replace(/^(  "version": )"[^"]*"/m, `$1"${v}"`));
-          const back = JSON.parse(fs.readFileSync("capability.json", "utf8")).version;
-          if (back !== v) { console.error(`capability.json version ${back} != package.json version ${v}`); process.exit(1); }
+          // Replace only the top-level version string so the rest of the manifest keeps its formatting, and the
+          // version-pinned reinstall hint in the gate predicate ([gate-bundle]), which must name the same version.
+          const text = fs.readFileSync("capability.json", "utf8")
+            .replace(/^(  "version": )"[^"]*"/m, `$1"${v}"`)
+            .replace(/npm:@taoc\/gsd-memanto@[0-9A-Za-z.+-]+/g, `npm:@taoc/gsd-memanto@${v}`);
+          fs.writeFileSync("capability.json", text);
+          const back = JSON.parse(fs.readFileSync("capability.json", "utf8"));
+          if (back.version !== v) { console.error(`capability.json version ${back.version} != package.json version ${v}`); process.exit(1); }
+          const pins = JSON.stringify(back.gates).match(/npm:@taoc\/gsd-memanto(@[^ ]*)?/g) || [];
+          if (pins.length === 0 || pins.some((x) => x !== `npm:@taoc/gsd-memanto@${v}`)) { console.error(`gate reinstall hints ${pins} do not pin ${v}`); process.exit(1); }
           NODE
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Releasing $version" >> "$GITHUB_STEP_SUMMARY"
@@ -168,28 +218,6 @@ jobs:
           NODE
           git --no-pager diff --stat
 
-      # The suite drives the real host, so the release is tested against the engines.gsd floor. The host is installed
-      # outside the repo, at an exact version, with install scripts disabled, and is never part of the package.
-      - name: Install the gsd-core host
-        shell: bash
-        env:
-          GSD_VERSION: "1.20.1"
-        run: |
-          set -euo pipefail
-          npm install --prefix "$RUNNER_TEMP/gsd-core" --no-audit --no-fund --ignore-scripts "@opengsd/gsd-core@$GSD_VERSION"
-          echo "GSD_CORE_DIR=$RUNNER_TEMP/gsd-core/node_modules/@opengsd/gsd-core/gsd-core" >> "$GITHUB_ENV"
-
-      # npm test (tools/run-tests.cjs) fails the step when one test or fewer ran, so no second count check is needed.
-      - name: Test
-        shell: bash
-        env:
-          MEMANTO_SPIKE_INSTALLER: "1"
-        run: |
-          npm test
-
-      - name: Show what would be published
-        run: npm pack --dry-run
-
       # Staging comes before the commit and tag on purpose: a staged version can be rejected if a later step
       # fails, whereas a pushed tag is awkward to take back.
       - name: Stage the release on npm
@@ -197,10 +225,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm stage publish 2>&1 | tee stage.log
+          npm stage publish --ignore-scripts 2>&1 | tee stage.log
           echo "Staged. Approve it on the package's Staged Packages tab, or run: npm stage list" >> "$GITHUB_STEP_SUMMARY"
 
+      # Defence in depth on top of the separate test job: every git command below runs with hooks disabled
+      # (core.hooksPath=/dev/null plus --no-verify), the commit and tag step holds no GitHub token (a filter or
+      # fsmonitor command it triggers cannot read one), and the push goes to an explicit github.com URL, never origin.
       - name: Commit and tag the release
+        if: ${{ !inputs.dry-run }}
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -c core.hooksPath=/dev/null add package.json capability.json CHANGELOG.md
+          git -c core.hooksPath=/dev/null commit --no-verify -m "chore(release): $VERSION"
+          git -c core.hooksPath=/dev/null tag "v$VERSION"
+
+      - name: Push the release commit and tag
         if: ${{ !inputs.dry-run }}
         shell: bash
         env:
@@ -208,15 +252,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json capability.json CHANGELOG.md
-          git commit -m "chore(release): $VERSION"
-          git tag "v$VERSION"
+          # No global or system git config, so only the checkout's own .git/config applies.
+          export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+          # url.<base>.insteadOf (or pushInsteadOf) would redirect even an explicit URL, and http.*, credential.*
+          # and include* keys can route or capture the header. The checkout writes none of them, so refuse to push.
+          if git config --local --get-regexp '^(url|http|credential|include|includeif)\.'; then
+            echo "the repository git config has url, http, credential or include keys (listed above); refusing to send the push credential. The version is staged on npm: reject it (npm stage reject <stage-id>)." >&2
+            exit 1
+          fi
+          remote="https://github.com/${GITHUB_REPOSITORY}.git"
           # The checkout persisted no credential, so the push credential exists only for these two commands.
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           echo "::add-mask::$auth"
-          push() { git -c "http.extraheader=AUTHORIZATION: basic $auth" push origin "$1"; }
+          push() { git -c core.hooksPath=/dev/null -c "http.extraheader=AUTHORIZATION: basic $auth" push --no-verify "$remote" "$1"; }
           if ! push HEAD:main || ! push "v$VERSION"; then
             echo "The version is staged on npm but the commit or tag was not pushed. Reject the staged version (npm stage reject <stage-id>), then run the release again." >&2
             exit 1
