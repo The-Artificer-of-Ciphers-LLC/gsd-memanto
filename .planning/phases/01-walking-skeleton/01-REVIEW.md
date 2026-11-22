@@ -1,10 +1,9 @@
 ---
 phase: 01-walking-skeleton
-reviewed: 2026-11-22T03:01:58Z
+reviewed: 2026-11-22T03:15:48Z
 depth: standard
-files_reviewed: 10
+files_reviewed: 8
 files_reviewed_list:
-  - .github/workflows/publish.yml
   - README.md
   - lib/checks.cjs
   - lib/health.cjs
@@ -13,84 +12,80 @@ files_reviewed_list:
   - test/gate-bundle.test.cjs
   - test/health.test.cjs
   - test/loader-drift.test.cjs
-  - test/release.test.cjs
 findings:
   critical: 0
-  warning: 2
+  warning: 1
   info: 1
-  total: 3
+  total: 2
   necessity: 0
 status: issues_found
 ---
 
-# Phase 1: Code Review Report (round 5, re-review of the round-4 fixes and owner follow-ups)
+# Phase 1: Code Review Report (round 6, re-review of the round-5 fixes)
 
-**Reviewed:** 2026-11-22T03:01:58Z
+**Reviewed:** 2026-11-22T03:15:48Z
 **Depth:** standard
-**Files Reviewed:** 10 (`git diff 2750ff1^1 HEAD -- . ':!.planning'`)
+**Files Reviewed:** 8 (`git diff 5b8643e^1 5b8643e -- . ':!.planning'`)
 **Status:** issues_found
 
 ## Summary
 
-This round re-reviews the round-4 fixes (`e0a18cb`, `6620f9b`, `a66bf46`, `4ac2a9f`, `473d9e8`) and the owner follow-ups (`a16d035`, `94afcd5`). `npm test` reports 417 tests: 416 pass, 1 skipped, 0 fail. Every host run used a temp `GSD_HOME` and a temp project. The only network traffic went to the closed local port `127.0.0.1:9`. No Memanto server was contacted. The necessity reference was read, and no necessity findings apply.
+This round re-reviews the round-5 fixes (`11c9189`, `9e8465c`, `66755b1`, merged in `5b8643e`). `npm test` reports 422 tests: 421 pass, 1 skipped, 0 fail. Every host run used a temp `GSD_HOME` and a temp project. The only network traffic went to the closed local ports `127.0.0.1:9` and `[::1]:9`. No Memanto server was contacted. The necessity reference was read, and no necessity findings apply.
 
-All five round-4 findings are fixed. The new endpoint allowlist in `lib/health.cjs` held up under adversarial testing. Doctor, however, still misreports which copy gsd-core loads when both copies are skipped (WR-01). The new loader drift test checks only one of the three loader facts that inference relies on (WR-02). Doctor still exits 1 in the WR-01 state, so nothing fails open. The new curl hint is not safe to paste into a shell (IN-01).
+WR-02 and IN-01 are fixed and complete. WR-01 is fixed for the reported two-copy case. However, the new "neither loaded" branch also handles the common single-copy case. In that case its wording is wrong, and for a copy rejected by `engines.gsd` or by validation, its fix hint is wrong too (new WR-01). This regresses the fix hint that doctor gave before `11c9189`. Doctor still exits 1 in every case, so nothing fails open.
 
-### Status of the round-4 findings
+### Status of the round-5 findings
 
-| Round-4 | Verdict | Notes |
+| Round-5 | Verdict | Notes |
 |---------|---------|-------|
-| CR-01 | Fixed, complete | The regex at `lib/health.cjs:30-36` allows one `@` at most. That `@` can only end the userinfo, because the user and password classes exclude `@`, `:`, `/`, `\`, `?` and `#`, and the decoded path is checked against `AT_FORMS` (`:63`). The WHATWG cross-check (`:74-75`) rejects any rewritten host, such as `127.1`, `0x7f.1`, `[::ffff:1.2.3.4]`, `[0::1]`, `1.2.3.4.5` or `a.0x1`. A 2,000,000-input random fuzz produced 132,017 accepted values over mixed-case schemes and the characters `: / @ % [ ] \ ? # ＠`, tab, `%40`, `%3A` and `%2F`. For every one of them, the displayed host equals `new URL(value).host`, and the display holds no `@`. Hand-tested edge cases also stay on the configured host and are never echoed: `//evil.com` and `%2F%2Fevil.com` base paths, `%2e%2e` segments, `%2540`, `%00` and `%0d%0a` in the userinfo, `xn--` hosts, a trailing-dot host and leading-zero ports. The probe target and the Basic header come only from the accepted parts (`:109-115`). The display is only `scheme://host[:port]` plus `/<base path>`. A rejected value prints only `value <redacted>` (`lib/checks.cjs:121`). No other echo path exists: `v.url` reaches only `checkHealth` and `displayBase`. Both round-4 reproductions block, and nothing is probed for them. An upper-case scheme is normalised and probed in lower case. |
-| WR-01 | Fixed for the reported cases; one residual (new WR-01) | The fragment mode now reports `gate-bundle` as an error that gives the loader's reason. The validation mode is reported as undetermined, which is an error. `POST_COLLISION_REASONS` matches `capability-loader.cjs` 1.20.1 `:700-853` in order. When both copies are skipped, doctor still names the project copy as loaded (WR-01 below). |
-| IN-01 | Fixed, complete | The "colliding" parenthetical now requires a `COLLIDES` reason (`memanto.cjs:418-423`). |
-| IN-02 | Fixed, complete | The rule appears in every rejected-value hint (`lib/checks.cjs:122-124`). The README states that `@` is not supported in the base path. |
-| IN-03 | Fixed, complete | `names="$(...)"; rc=$?` inside `set +e` captures git's exit code. `set -e` is restored, and `-u` and `pipefail` stay on. Exit 0 refuses, exit 1 continues, and any other exit fails the step (`publish.yml:139-151, 287-301`). The hermetic test runs the checks as they are written in the workflow. |
+| WR-01 | Fixed for the reported case; one regression (new WR-01) | The reviewer's squat repro now reports `loaded` and `gate-bundle` as errors, and no record claims a loaded copy. `loadFailureReasons` (`memanto.cjs:328-350`) counts warnings per call and takes the maximum of the warnings list and stderr, so one skipped copy stays at a count of 1. A single-copy squat run gave one warning and no "(reported for both copies)" mark. When the global copy fails validation and the project copy fails a post-collision check, `rendered === false` short-circuits `loadedCopy` to `null` (`:401`), which is correct. |
+| WR-02 | Fixed, complete | `test/loader-drift.test.cjs:453-486` passes against the installed 1.20.1 loader (global add `:290`, project add `:292`, `acceptedIds.has(id)` `:690`, the single `acceptedIds.add` `:879`). It fails against the round-5 two-mutation loader (`scratchpad/r5/core`) with the root-order message, which names `memanto.cjs loadedCopy`. The guard window (`collision.line-4 .. collision.line`) contains the `if` line at 690. |
+| IN-01 | Fixed, complete | The hint is `curl -fsS '<scheme://host[:port][/BASE_PATH]>/health'` (`lib/checks.cjs:150`). The display can hold only `[A-Za-z0-9.:-]`, brackets and `/BASE_PATH`, so it can never hold a `'`. No other curl hint exists in `lib/`, `scripts/` or `memanto.cjs`. A pasted IPv6 hint runs as intended: `curl -fsS 'http://[::1]:9/BASE_PATH/health'` attempts the connection (exit 7, connection refused) and does not glob. |
 
 ## Narrative Findings (AI reviewer)
 
 ## Warnings
 
-### WR-01: Doctor says gsd-core loads the project copy when gsd-core skipped both copies
+### WR-01: With only one memanto copy installed, doctor reports that it "loaded neither memanto copy" and says that reinstalling does not help, even when a reinstall is the fix
 
-**File:** `memanto.cjs:299-307` (`loadFailureReasons` de-duplicates by text), `:358` (a `POST_COLLISION` reason sets `globalSkipped`), `:363` (returns `projectCopy`), consumed by `loadedCheck` (`:179-180`), `duplicateCheck` (`:287`) and `gateBundleCheck` (`:393-408`)
-**Issue:** A `POST_COLLISION` reason proves only that the global copy did not claim the id. It does not prove that the project copy loaded. Both copies can fail the same post-collision check. For example, another capability can own a `memanto.*` config key, or both installs can come from one broken release. Render-hooks then prints one identical warning per copy. `loadFailureReasons` collapses the two warnings into one, and `loadedCopy` returns the project copy as loaded. The same happens when the global copy fails a pre-collision check and the project copy fails a post-collision one. In both cases `loadedCopy` never checks whether any memanto hook was rendered.
-**Reproduced** with `/private/tmp/claude-501/-Users-trekkie-projects-gsd-memanto/4f758622-4157-4863-b789-bcac255aeca3/scratchpad/r5/both-skipped.cjs`. The setup was a temp `GSD_HOME` with a global install and a consented project install. A hand-copied global capability `aaa-squat` declared the config key `memanto.enabled`. Results:
-- Render-hooks `discuss:pre` printed the `owns config key "memanto.enabled"` warning twice and rendered 0 memanto hooks. The loader's `_overlay.warnings` named both scopes.
-- Doctor `--raw` reported `loaded` as **ok**, with the message "gsd-core loads the project copy at …".
-- `duplicate-install` said "gsd-core skipped the global one and loads the project one".
-- `gate-bundle` said "gsd-core loads the bundle at <project>". It blamed only the global copy, and its fix was to reinstall the global copy and keep the project one. That fix cannot clear the squat.
+**File:** `memanto.cjs:173-174` (`NEITHER_FIX`), `:169-172` (`neitherLoadedText`), `:179-182` (`loadedCheck`), `:438-441` (`gateBundleCheck`), `:581` (`neither`)
+**Issue:** `noneLoaded` and `neither` depend only on `rendered === false`. They do not check whether two copies exist, and they do not check which reason gsd-core gave. As a result, two things go wrong whenever any single copy is skipped:
+- The message says "neither memanto copy".
+- The fix is always `NEITHER_FIX`, which says "reinstalling or removing a memanto copy does not clear it".
 
-Doctor still exits 1, because `render:discuss:pre` is an error. Nothing fails open, but three records state a load that never happened and give a fix that does not work.
-**Fix:** Pass the render evidence into `loadedCopy`. When at least one render succeeded and none of them holds a memanto hook, no copy is loaded:
-```js
-// collectChecks
-const rendered = renders.length ? renders.some((rh) => rh.hooks.some((h) => h && h.capId === 'memanto')) : null;
-// loadedCopy({ ..., rendered })
-if (rendered === false) return null; // gsd-core loaded no copy
-```
-In `loadedCheck`, report `loaded === null` with active rows as an `error`, for example: "capability list shows memanto active but gsd-core loaded no copy (see render checks)". Keep counting duplicates within one render: two `failed to load` lines in one render-hooks call mean that both copies were skipped. Add the squat repro to `test/gate-bundle.test.cjs`, and assert that `loaded` is `error` and that no record claims a loaded copy.
+That fix holds only for an ownership clash, such as an `owns …` squat or a first-party `id collides`. It is false when the reason is `incompatible with GSD …`, `failed validation: …`, a manifest read error or an invalid hook fragment. For each of those, installing a valid or compatible release is the cure.
 
-### WR-02: The loader drift test does not check two of the three loader facts that `POST_COLLISION` depends on
+Within the same report, the `engines` record (`:243`) and the `render:discuss:pre` record (`:283`) both say to reinstall, so doctor now contradicts itself. Before `11c9189`, the same state gave `loaded` the fix `reinstall: gsd-tools capability install …`, which was correct.
 
-**File:** `test/loader-drift.test.cjs:25-66`. The inference is stated at `memanto.cjs:311-318, 335-345`. The loader facts are at `capability-loader.cjs:289-291` (global root added before project), `:690` (collision check on `acceptedIds`) and `:879` (`acceptedIds.add(id)` only on acceptance).
-**Issue:** The test checks only the text order of the `skip('…')` literals. The inference that "a post-collision reason names the global copy" and the round-3 `COLLIDES` rule ("the global copy holds the id") also depend on two more facts: `overlayRoots` scans the global root first, and the id is claimed only after the last listed check. If a release breaks either fact, the test still passes and doctor reports the opposite copy. With a project-first scan, a project copy that gsd-core loaded makes the global copy collide. Doctor would then report the global copy as loaded, and with an installed global bundle, `gate-bundle` would be `ok` while the gate runs the global `gate.cjs` and gsd-core runs the project manifest.
-**Reproduced** with a copy of the 1.20.1 loader at `/private/tmp/claude-501/-Users-trekkie-projects-gsd-memanto/4f758622-4157-4863-b789-bcac255aeca3/scratchpad/r5/core/bin/lib/capability-loader.cjs`. The copy has two mutations: `add(globalDir, …)` moved after `add(projectDir, …)`, and `acceptedIds.add(id)` inserted right after the collision check. `GSD_CORE_DIR=<that dir> node --test test/loader-drift.test.cjs` gave 2 pass, 0 fail.
-**Fix:** Add two assertions to the same source scan:
-1. In `function overlayRoots`, the first `add(globalDir` line comes before the first `add(projectDir` line.
-2. The collision check reads `acceptedIds.has(id)`, and the only `acceptedIds.add(` line comes after the line of the last listed reason.
+**Reproduced** with `/private/tmp/claude-501/-Users-trekkie-projects-gsd-memanto/4f758622-4157-4863-b789-bcac255aeca3/scratchpad/r6/single.cjs`:
+- `gengines` (one global install whose `engines.gsd` is `">=9.0.0"`):
+  - `loaded` and `gate-bundle` say "gsd-core loaded neither memanto copy (incompatible with GSD 1.20.1 …)", with `NEITHER_FIX`.
+  - `engines` says "install a memanto release whose engines.gsd includes GSD 1.20.1".
+- `gsquat` and `psquat` (one global or one project install, plus a squat): the message says "neither memanto copy" although only one copy exists. `duplicate-install` correctly says "at most one scope".
+- Baseline: `single-base.cjs gengines`, run against the `5b8643e^1` tree extracted to `scratchpad/r6/base`, gives `loaded` the fix `reinstall: …`.
 
-Each assertion should fail with a message that names `memanto.cjs` `loadedCopy`. Add the two mutations above to the mutation set the fix report already uses.
+In every run doctor exits 1.
+
+**Fix:**
+- Choose the fix from the reasons. Use `NEITHER_FIX` only when every reason matches `/^(owns |id collides)/`. Otherwise use `fix the load error the loaded, engines and render checks report, or ${reinstallFix()}`.
+- Choose the wording from the number of manifests on disk. Write "neither memanto copy" only when `hasManifest(gsdHome) && hasManifest(projectRoot)`. Otherwise write `gsd-core did not load the memanto copy at <dir>`.
+- Add the `gengines` and single-copy squat cases to `test/gate-bundle.test.cjs`. Assert the wording, and assert that the fix does not contradict the `engines` record.
 
 ## Info
 
-### IN-01: Pasting the new curl hint into a shell runs a different command
+### IN-01: When no memanto hook renders and gsd-core gives no reason, `loaded` and `gate-bundle` disagree
 
-**File:** `lib/checks.cjs:143-148`, `lib/health.cjs:41`
-**Issue:** For a URL with a base path, the hint prints `curl -fsS http://127.0.0.1:9/<base path>/health` (reproduced). A shell reads `<base` as a stdin redirect and `path>/health` as the argument `path` plus a stdout redirect to `/health`. If a file named `base` exists in the current directory, the pasted hint runs curl against `http://127.0.0.1:9/` and the host `path`, and it truncates or creates `/health`. If no such file exists, the shell refuses with an error.
-**Fix:** Use a placeholder that is inert in a shell, for example `curl -fsS 'http://127.0.0.1:9/BASE_PATH/health'` (quoted, with no `<` or `>`), or put the placeholder outside the command: `curl -fsS <url>/health (url: http://127.0.0.1:9 plus your base path)`. Update the README row and the line-length test to match.
+**File:** `memanto.cjs:179` (`noneLoaded && (shown.length || reported)`), `:581` (`neither` also needs `failures.length`), `:505`
+**Issue:** If renders succeed, no memanto hook appears and there is no `failed to load` warning, `loadedCopy` returns `null`. `loaded` then reports "gsd-core loaded neither memanto copy".
+
+`gate-bundle`, however, gets `neither === false` and `loaded === null`. It falls through to `ok`, with the message "the discuss:pre gate runs the installed bundle gsd-core loads". That claims a load the `loaded` record has just denied.
+
+With the current manifest, this state needs gsd-core and doctor to disagree on `memanto.enabled`, or a copy whose gate is gated off. So the evidence is judgment-based, and doctor still exits 1 through `loaded` and `render:*`.
+
+**Fix:** Pass `rendered === false` itself as `noneLoaded` to `gateBundleCheck`, and keep `failures` only for the message text. Alternatively, make the `ok` text conditional on `loaded` being non-null.
 
 ---
 
-_Reviewed: 2026-11-22T03:01:58Z_
+_Reviewed: 2026-11-22T03:15:48Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
