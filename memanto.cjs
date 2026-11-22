@@ -178,14 +178,18 @@ function consentCheck(rows, scopeDirs) {
 function enginesCheck(rows, scopeDirs, hostVersion) {
   const bad = rows.find((r) => r.status === 'incompatible');
   if (!bad) return record('engines', 'ok', `memanto engines.gsd accepts GSD ${hostVersion || '(unknown version)'}`, '');
-  const manifest = readJson(path.join(scopeDirs[bad.scope] || '', 'capability.json')) || {};
-  const range = manifest.engines && manifest.engines.gsd;
+  // IN-04: an unknown scope has no directory to read; never fall back to a
+  // relative capability.json in the cwd.
+  const dir = Object.prototype.hasOwnProperty.call(scopeDirs, bad.scope) ? scopeDirs[bad.scope] : null;
+  const manifest = (dir && readJson(path.join(dir, 'capability.json'))) || {};
+  const declared = manifest.engines && manifest.engines.gsd;
+  const range = typeof declared === 'string' ? JSON.stringify(declared) : '(unknown range)';
   return record(
     'engines',
     'error',
-    clean(`memanto in ${bad.scope} scope requires engines.gsd ${JSON.stringify(range)} but the host is GSD ${hostVersion || '(unknown version)'}; its gate does not run (fails open)`, REASON_MAX),
+    clean(`memanto in ${bad.scope} scope requires engines.gsd ${range} but the host is GSD ${hostVersion || '(unknown version)'}; its gate does not run (fails open)`, REASON_MAX),
     `install a memanto release whose engines.gsd includes GSD ${hostVersion || 'this host'} ` +
-      `(gsd-tools capability install npm:@taoc/gsd-memanto@<version> --yes), or use a gsd-core inside ${JSON.stringify(range)}`,
+      `(gsd-tools capability install npm:@taoc/gsd-memanto@<version> --yes), or use a gsd-core inside ${range}`,
   );
 }
 
@@ -379,7 +383,8 @@ function route(ctx) {
   return undefined;
 }
 
-module.exports = { route, gateChecks, PROBE_TIMEOUT_MS };
+// enginesCheck is exported for tests only.
+module.exports = { route, gateChecks, enginesCheck, PROBE_TIMEOUT_MS };
 
 if (require.main === module) {
   route({

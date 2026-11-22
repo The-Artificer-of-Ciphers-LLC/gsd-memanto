@@ -289,6 +289,22 @@ test('memanto.enabled not true: enabled warns and the loaded, render and gate ch
   for (const id of ['loaded', 'render:discuss:pre', 'agent-id']) assert.equal(rec(rep, id), undefined, id);
 });
 
+// --- IN-04: an incompatible row in an unknown scope never reads a cwd capability.json ---
+
+test('enginesCheck with an unknown scope prints (unknown range), not a capability.json from the cwd', () => {
+  const cwd = env.tmpDir('memanto-engines-cwd-');
+  fs.writeFileSync(path.join(cwd, 'capability.json'), JSON.stringify({ id: 'other', engines: { gsd: '>=7.7.7' } }));
+  const script = `const d = require(${JSON.stringify(path.join(env.REPO_ROOT, 'memanto.cjs'))});
+const r = d.enginesCheck([{ id: 'memanto', status: 'incompatible', scope: 'weird' }], { global: '/nonexistent-g', project: '/nonexistent-p' }, '1.20.1');
+process.stdout.write(JSON.stringify(r));`;
+  const res = spawnSync(process.execPath, ['-e', script], { cwd, encoding: 'utf8' });
+  assert.equal(res.status, 0, res.stderr);
+  const r = JSON.parse(res.stdout);
+  assert.equal(r.status, 'error', JSON.stringify(r));
+  assert.ok(r.message.includes('(unknown range)'), r.message);
+  assert.ok(!r.message.includes('7.7.7') && !r.fix.includes('7.7.7'), JSON.stringify(r));
+});
+
 // --- IN-03: doctor neutralises the Unicode line and paragraph separators too ---
 
 test('a GSD_CORE_DIR holding U+2028 and U+2029 is echoed without line separators', () => {
