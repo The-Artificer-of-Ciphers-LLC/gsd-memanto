@@ -456,6 +456,34 @@ for (const mode of ['gengines', 'gsquat', 'psquat']) {
   });
 }
 
+// Round-6 IN-01: renders succeeded, no memanto hook rendered and gsd-core gave
+// no reason. loaded and gate-bundle must agree: neither may claim a load.
+// gateBundleCheck takes the render evidence itself (rendered: false), not a
+// flag the caller has already filtered on the presence of reasons.
+test('gate-bundle agrees with loaded when no memanto hook renders and gsd-core printed no reason', () => {
+  const { loadedCheck, gateBundleCheck } = require('../memanto.cjs');
+  const h = env.tmpDir('memanto-home-');
+  const project = emptyAgentProject();
+  env.installBundle({ home: h });
+  const scopeDirs = { global: globalBundle(h), project: path.join(project, '.gsd', 'capabilities', 'memanto') };
+  const roots = { gsdHome: h, projectRoot: project };
+  const rows = [{ id: 'memanto', scope: 'global', status: 'active', version: '0.1.0' }];
+  const l = loadedCheck(rows, null, scopeDirs, { noneLoaded: true, failures: [], roots });
+  const g = gateBundleCheck(null, scopeDirs, roots, [], false);
+  assert.equal(l.status, 'error', JSON.stringify(l));
+  assert.equal(g.status, 'error', JSON.stringify(g));
+  for (const r of [l, g]) {
+    assert.ok(!r.message.includes('runs the installed bundle gsd-core loads'), r.message);
+    assert.ok(r.message.includes(`gsd-core did not load the global memanto copy at ${scopeDirs.global} and printed no load error`), r.message);
+    assert.ok(r.fix.includes('render checks'), r.fix);
+  }
+  // With a hook rendered (or no render evidence) the ok path is unchanged.
+  for (const rendered of [true, null]) {
+    const ok = gateBundleCheck({ scope: 'global', dir: scopeDirs.global }, scopeDirs, roots, [], rendered);
+    assert.equal(ok.status, 'ok', JSON.stringify(ok));
+  }
+});
+
 // The reviewer's repro (modes fragment and validation): a global capability
 // install plus a consented project install, then the global manifest is broken
 // so gsd-core skips the global copy and loads the project one. The predicate

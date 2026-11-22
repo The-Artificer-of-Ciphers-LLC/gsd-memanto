@@ -451,7 +451,11 @@ const otherScope = (scope) => (scope === 'global' ? 'project' : 'global');
 // installed, nor any installed copy. It names the stray copy: a directory with
 // no committed ledger entry is deleted by hand, because gsd-tools capability
 // remove only removes ledgered installs.
-function gateBundleCheck(loaded, scopeDirs, roots, failures = null, noneLoaded = false) {
+// Round-6 IN-01: rendered is the render evidence itself (true, false, or null
+// when no render succeeded). rendered === false is an error whether or not
+// gsd-core printed a reason, so gate-bundle agrees with loaded.
+function gateBundleCheck(loaded, scopeDirs, roots, failures = null, rendered = null) {
+  const noneLoaded = rendered === false;
   const resolved = gateBundle.resolveGateBundle(roots);
   const installed = {
     global: gateBundle.isInstalledBundle(roots.gsdHome),
@@ -600,10 +604,10 @@ function collectChecks(cwd) {
   // rows is null when capability list could not be read; loadedCopy then
   // decides only what the remaining evidence proves.
   const loaded = loadedNow();
-  // Round-5 WR-01: gsd-core skipped every memanto copy it found and said why.
-  const neither = rendered === false && Boolean(failures && failures.length);
-  checks.push(duplicateCheck(scopeDirs, roots, loaded, neither));
-  checks.push(gateBundleCheck(loaded, scopeDirs, roots, failures, neither));
+  // Round-5 WR-01 / round-6 IN-01: renders succeeded and no memanto hook
+  // rendered, with or without a reason; failures only feed the message text.
+  checks.push(duplicateCheck(scopeDirs, roots, loaded, rendered === false));
+  checks.push(gateBundleCheck(loaded, scopeDirs, roots, failures, rendered));
   checks.push(discussBypassCheck(cfg));
   if (enabled) checks.push(...gateChecks(cwd));
   return checks;
@@ -648,7 +652,7 @@ function route(ctx) {
 }
 
 // enginesCheck, loadedCopy and the POST_COLLISION list are exported for tests only.
-module.exports = { route, gateChecks, enginesCheck, loadedCopy, POST_COLLISION, POST_COLLISION_REASONS, PROBE_TIMEOUT_MS };
+module.exports = { route, gateChecks, enginesCheck, loadedCopy, loadedCheck, gateBundleCheck, POST_COLLISION, POST_COLLISION_REASONS, PROBE_TIMEOUT_MS };
 
 if (require.main === module) {
   route({
