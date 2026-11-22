@@ -61,6 +61,7 @@ function claimsOf(message, dirs) {
 //                                read; cause 'permission' | 'nonregular' | 'oversized' | 'invalid' | 'other';
 //                                scope as gsd-core sees it (project when GSD_HOME is the project root)
 //   ledgerFiles: [file]          the two scope ledger paths
+//   unreadableLedgerScopes: [scope]  scopes whose ledger exists but cannot be read (round-10 WR-01)
 function assertConsistent(records, facts = {}, label = '') {
   const list = records.filter(Boolean);
   const at = (r) => `${label} ${r.id}: ${JSON.stringify(r)}`;
@@ -225,6 +226,13 @@ function assertConsistent(records, facts = {}, label = '') {
         if (r.fix.includes(`${verb} ${u.file}`)) assert.ok(ur.fix.includes(`${verb} ${u.file}`), `${at(r)} gives another remedy for ${u.file} than unreadable-files: ${ur.fix}`);
       }
     }
+  }
+  // Round-10 WR-01: a ledger that exists but cannot be read may list memanto,
+  // so no record says that scope's ledger lists no memanto entry (the copy is
+  // then never deleted by hand: ledgeredDirs holds its directory).
+  for (const s of facts.unreadableLedgerScopes || []) {
+    const re = new RegExp(`no ${s} ledger (?:entry )?lists|has no ${s} ledger entry|no ${s} capability ledger lists|not in the ${s} capability ledger`);
+    for (const r of list) assert.ok(!re.test(r.message) && !re.test(r.fix), `${at(r)} says no ${s} ledger lists memanto, but the ${s} ledger cannot be read`);
   }
   // A ledger is never moved aside without saying it drops every other entry in it.
   for (const r of list) {

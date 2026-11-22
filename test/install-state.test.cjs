@@ -124,6 +124,7 @@ function factsOf(r, loadedScope) {
     // The scope gsd-core gives the file: the one copy's scope when the roots alias.
     unreadable: r.unread.map((u) => ({ file: fileOf(r, u), kind: u.kind, cause: u.cause, scope: r.same ? (r.demoted ? 'project' : 'global') : u.scope })),
     ledgerFiles: [`${rootOf(r.dirs.global)}/.gsd-capabilities.json`, `${rootOf(r.dirs.project)}/.gsd-capabilities.json`],
+    unreadableLedgerScopes: ['global', 'project'].filter((s) => (s === 'global' ? r.gLed : r.pLed) === 'unreadable').map((s) => (r.same ? (r.demoted ? 'project' : 'global') : s)),
   };
 }
 
@@ -357,6 +358,40 @@ const CASES = [
     assert.ok(r.unreadable.fix.startsWith(`inspect ${D.project}/capability.json`), r.unreadable.fix);
     assert.ok(r.unreadable.fix.includes('--scope project'), r.unreadable.fix);
   }],
+  // Round-10 WR-01: a ledger that exists but cannot be read is its own ledger
+  // state ('unreadable'), never "no entry": no record deletes the copy by hand.
+  ['global install whose global ledger is a FIFO, the gate renders (r10h2 gledgerfifo)', { g: true, gLed: 'unreadable', rows: null, hook: true, unread: [{ scope: G, kind: 'ledger', cause: 'nonregular', what: 'a FIFO' }] }, STATES.GLOBAL_LOADED, G, (r) => {
+    assert.equal(r.gateBundle.status, 'error', JSON.stringify(r.gateBundle));
+    assert.ok(r.gateBundle.message.includes('the discuss:pre gate cannot read the global capability ledger /h/.gsd-capabilities.json (a FIFO)'), r.gateBundle.message);
+    assert.ok(r.gateBundle.fix.startsWith('remove /h/.gsd-capabilities.json (it is a FIFO, not a real global capability ledger'), r.gateBundle.fix);
+    assert.equal(r.gateBundle.fix, r.unreadable.fix);
+    for (const k of ['loaded', 'gateBundle', 'unreadable']) assert.ok(!/\bdelete\b/.test(r[k].fix), `${k}: ${r[k].fix}`);
+  }],
+  ['global install whose global ledger has no read permission (r10h ledgereacces)', { g: true, gLed: 'unreadable', rows: null, hook: true, unread: [{ scope: G, kind: 'ledger', cause: 'permission', what: 'EACCES: permission denied' }] }, STATES.GLOBAL_LOADED, G, (r) => {
+    assert.ok(r.gateBundle.message.includes('cannot read the global capability ledger /h/.gsd-capabilities.json'), r.gateBundle.message);
+    assert.ok(r.gateBundle.fix.startsWith('restore read permission on /h/.gsd-capabilities.json: chmod u+rw /h/.gsd-capabilities.json'), r.gateBundle.fix);
+    assert.equal(r.gateBundle.fix, r.unreadable.fix);
+  }],
+  ['global install, oversized global ledger, capability list readable but shows no row', { g: true, gLed: 'unreadable', rows: [], hook: true, unread: [{ scope: G, kind: 'ledger', cause: 'oversized', what: '9000000 bytes, more than the 8388608-byte limit' }] }, STATES.GLOBAL_LOADED, G, (r) => {
+    for (const k of ['loaded', 'consent', 'gateBundle']) {
+      assert.ok(r[k].fix.startsWith('inspect /h/.gsd-capabilities.json and restore it from a backup'), `${k}: ${r[k].fix}`);
+      assert.ok(r[k].fix.includes('drops the ledger entry of every other global capability'), `${k}: ${r[k].fix}`);
+    }
+    assert.ok(r.loaded.message.includes('its global capability ledger cannot be read'), r.loaded.message);
+    assert.ok(r.consent.message.includes('cannot be read'), r.consent.message);
+  }],
+  ['project install whose project ledger has no read permission, nothing renders', { p: true, pLed: 'unreadable', rows: null, unread: [{ scope: P, kind: 'ledger', cause: 'permission', what: 'EACCES' }] }, STATES.LEDGER_UNREADABLE, null, (r) => {
+    for (const k of ['loaded', 'gateBundle']) {
+      assert.equal(r[k].status, 'error', JSON.stringify(r[k]));
+      assert.ok(r[k].message.includes('its project capability ledger /p/.gsd-capabilities.json cannot be read'), r[k].message);
+      assert.ok(r[k].fix.startsWith('restore read permission on /p/.gsd-capabilities.json: chmod u+rw'), r[k].fix);
+    }
+  }],
+  ['two copies, the global ledger is not valid JSON, no render-hooks call succeeded', { g: true, p: true, gLed: 'unreadable', pInst: true, rows: [row(P)], ran: false, unread: [{ scope: G, kind: 'ledger', cause: 'invalid' }] }, STATES.LEDGER_UNREADABLE, null, (r) => {
+    assert.ok(r.loaded.fix.startsWith('inspect /h/.gsd-capabilities.json and restore it from a backup (it is not valid JSON)'), r.loaded.fix);
+    assert.ok(r.duplicate.fix.includes('inspect /h/.gsd-capabilities.json'), r.duplicate.fix);
+    assert.ok(!/capability remove/.test(r.duplicate.fix), r.duplicate.fix);
+  }],
 ];
 
 // Round-10 WR-02 (mutation): the shared rules catch an unreadable-files fix
@@ -371,7 +406,7 @@ test('the shared rules reject an unreadable-files record that disagrees with the
   assert.throws(() => assertConsistent(all(wrongScope), factsOf(r, null), 'scope'), /installs memanto in global scope|names the global copy|names a global copy|installs in global scope/);
   const moved = { ...recs.unreadable, fix: `move ${f} aside` };
   assert.throws(() => assertConsistent(all(moved), factsOf(r, null), 'cause'), /does not say "restore read permission|removes/);
-  const r2 = raw({ g: true, gInst: true, rows: null, hook: true, unread: [{ scope: G, kind: 'ledger', cause: 'permission', what: 'EACCES' }] });
+  const r2 = raw({ g: true, gLed: 'unreadable', rows: null, hook: true, unread: [{ scope: G, kind: 'ledger', cause: 'permission', what: 'EACCES' }] });
   const recs2 = installRecords(classifyInstall(evOf(r2)), OPTS);
   const aside = { ...recs2.unreadable, fix: `${recs2.unreadable.fix}; or move /h/.gsd-capabilities.json aside` };
   assert.throws(() => assertConsistent([recs2.loaded, aside], factsOf(r2, G), 'aside'), /removes|moves the ledger/);

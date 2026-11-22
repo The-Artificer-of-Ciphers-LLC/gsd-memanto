@@ -105,7 +105,8 @@ test('the gate lib code never blocks on a FIFO manifest, ledger or config.json',
   assert.equal(res.error, undefined, `the lib code blocked: ${res.error && res.error.code} after ${Date.now() - t0} ms`);
   const out = JSON.parse(res.stdout);
   assert.equal(out.manifest, null);
-  assert.equal(out.ledger, 'none');
+  // Round-10 WR-01: a FIFO ledger is unreadable, never "no ledger entry".
+  assert.equal(out.ledger, 'unreadable');
   assert.equal(out.installed, false);
   assert.equal(out.runs, null);
   assert.equal(out.cfg.ok, false);

@@ -445,6 +445,14 @@ function unreadableOnDisk(h, project, oneScope) {
       }
       if (!st || !st.isFile()) cause = 'nonregular';
       else if (st.size > max) cause = 'oversized';
+      // Round-10 WR-01: a ledger that is not valid JSON is unreadable too.
+      if (!cause && kind === 'ledger') {
+        try {
+          JSON.parse(fs.readFileSync(file, 'utf8'));
+        } catch (e) {
+          cause = e instanceof SyntaxError ? 'invalid' : null;
+        }
+      }
       if (!cause) {
         try {
           fs.accessSync(file, fs.constants.R_OK);
@@ -510,6 +518,7 @@ function assertDoctorConsistent(d, h, project, { stray, loadedScope } = {}) {
       unreadable: unreadableOnDisk(h, project, oneScope),
       ledgerFiles: [path.join(h, '.gsd-capabilities.json'), path.join(project, '.gsd-capabilities.json')],
       rowsKnown: capabilityListReadable(project, h),
+      unreadableLedgerScopes: unreadableOnDisk(h, project, oneScope).filter((u) => u.kind === 'ledger').map((u) => u.scope),
     },
     JSON.stringify(d.rep.checks.map((c) => c.id)),
   );
@@ -900,6 +909,97 @@ test('round-10 repro pledgerfifo: a FIFO project ledger next to a healthy global
   assertDoctorConsistent(d, h, project, { stray: null, loadedScope: 'global' });
 });
 
+// Round-10 WR-01 (reviewer's r10h2.cjs gledgerfifo and r10h.cjs ledgereacces):
+// a global ledger that exists but cannot be read is never "no ledger entry".
+// No record deletes the ledgered global bundle by hand; gate-bundle says the
+// ledger cannot be read and gives the remedy unreadable-files gives. The gate
+// itself still blocks (its selection rule fails closed).
+const R10L = {
+  gledgerfifo: {
+    skip: !POSIX && 'mkfifo is POSIX only',
+    break: (ledger) => {
+      fs.rmSync(ledger);
+      require('node:child_process').execFileSync('mkfifo', [ledger]);
+      return true;
+    },
+    remedy: (ledger) => `remove ${ledger} (it is a FIFO, not a real global capability ledger, so it holds no entries)`,
+  },
+  gledgereacces: {
+    skip: !POSIX && 'POSIX permissions',
+    break: (ledger) => denyRead(ledger),
+    remedy: (ledger) => `restore read permission on ${ledger}: chmod u+rw ${ledger}`,
+  },
+  gledgerbig: {
+    break: (ledger) => {
+      const l = JSON.parse(fs.readFileSync(ledger, 'utf8'));
+      l.pad = 'x'.repeat(8 * 1024 * 1024);
+      fs.writeFileSync(ledger, JSON.stringify(l));
+      return true;
+    },
+    remedy: (ledger) => `inspect ${ledger} and restore it from a backup`,
+    // The inline predicate has no size cap yet, so it runs the global gate (IN-02 adds the cap).
+    gateBlocks: false,
+  },
+  gledgerjson: {
+    break: (ledger) => {
+      fs.writeFileSync(ledger, '{"entries": {"memanto":');
+      return true;
+    },
+    remedy: (ledger) => `inspect ${ledger} and restore it from a backup (it is not valid JSON)`,
+  },
+};
+
+for (const [mode, spec] of Object.entries(R10L)) {
+  test(`round-10 repro ${mode}: an unreadable global ledger is never "no ledger entry", and no record deletes the ledgered bundle`, { skip: spec.skip }, (t) => {
+    const h = env.tmpDir('memanto-home-');
+    const project = env.makeProject({
+      config: { memanto: { enabled: true, agent_id: 'r10-agent', backend_url: servers.ok.url, api_url: servers.ok.url } },
+      phaseDirs: ['01-test'],
+    });
+    env.installBundle({ home: h });
+    const ledger = path.join(h, '.gsd-capabilities.json');
+    if (!spec.break(ledger)) return t.skip('running as a user that chmod 0 does not stop');
+    t.after(() => fs.rmSync(ledger, { force: true }));
+    const d = doctor(project, h, globalBundle(h));
+    assert.equal(d.status, 1, JSON.stringify(d.rep));
+    for (const c of d.rep.checks) assert.ok(!/\bdelete\b/.test(c.fix), `${c.id} deletes by hand: ${c.fix}`);
+    const gb = d.check('gate-bundle');
+    const ur = d.check('unreadable-files');
+    assert.ok(ur, JSON.stringify(d.rep.checks.map((c) => c.id)));
+    assert.equal(gb.status, 'error', JSON.stringify(gb));
+    assert.ok(gb.message.includes(`the discuss:pre gate cannot read the global capability ledger ${ledger}`), gb.message);
+    assert.ok(gb.fix.startsWith(spec.remedy(ledger)), gb.fix);
+    assert.ok(ur.fix.includes(spec.remedy(ledger)), ur.fix);
+    assertDoctorConsistent(d, h, project, { stray: null, loadedScope: 'global' });
+    // The gate fails closed: it blocks with [gate-bundle], it never runs the global gate.cjs.
+    if (spec.gateBlocks === false) return;
+    const verdict = runGate(project, h, PREDICATE);
+    assert.equal(verdict.block, true, JSON.stringify(verdict));
+    assert.match(verdict.message, /\[gate-bundle\]/, verdict.message);
+  });
+}
+
+test('round-10 WR-01: a project install whose project ledger has no read permission is never "no ledger entry"', { skip: !POSIX && 'POSIX permissions' }, (t) => {
+  const h = env.tmpDir('memanto-home-');
+  const project = env.makeProject({ config: CFG7(), phaseDirs: ['01-test'] });
+  const bundle = projectInstall(project, h);
+  const ledger = path.join(project, '.gsd-capabilities.json');
+  if (!denyRead(ledger)) return t.skip('running as a user that chmod 0 does not stop');
+  t.after(() => fs.chmodSync(ledger, 0o644));
+  const d = doctor(project, h, env.stageBundle());
+  assert.equal(d.status, 1, JSON.stringify(d.rep));
+  for (const c of d.rep.checks) assert.ok(!/\bdelete\b/.test(c.fix), `${c.id} deletes by hand: ${c.fix}`);
+  // gsd-core still loads the consented project copy (its hooks are declarative);
+  // the gate cannot read the ledger, so it blocks every run.
+  const loaded = d.check('loaded');
+  assert.ok(loaded.message.includes(`the project memanto copy at ${bundle}, but its project capability ledger cannot be read`), loaded.message);
+  const gb = d.check('gate-bundle');
+  assert.equal(gb.status, 'error', JSON.stringify(gb));
+  assert.ok(gb.message.includes(`the discuss:pre gate cannot read the project capability ledger ${ledger}`), gb.message);
+  for (const r of [loaded, gb]) assert.ok(r.fix.startsWith(`restore read permission on ${ledger}: chmod u+rw ${ledger}`), `${r.id}: ${r.fix}`);
+  assertDoctorConsistent(d, h, project, { stray: null, loadedScope: 'project' });
+});
+
 test('round-9 WR-01: memanto.cjs pins the sha256 of the shipped discuss:pre predicate command', () => {
   const memanto = require('../memanto.cjs');
   // Version-independent: every reinstall pin is normalised to @<version> first,
@@ -946,7 +1046,7 @@ test('a global install is still preferred over a project install, as gsd-core do
 
 const COMMITTED = { id: 'memanto', version: MANIFEST.version, source: 'fixture', integrity: '', files: [], sharedEdits: [] };
 
-function fixtureScope(root, { manifest = true, manifestId = 'memanto', gate = true, entry } = {}) {
+function fixtureScope(root, { manifest = true, manifestId = 'memanto', gate = true, entry, ledger } = {}) {
   const dir = path.join(root, '.gsd', 'capabilities', 'memanto');
   fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
   if (manifest) fs.writeFileSync(path.join(dir, 'capability.json'), JSON.stringify({ ...MANIFEST, id: manifestId }));
@@ -954,6 +1054,13 @@ function fixtureScope(root, { manifest = true, manifestId = 'memanto', gate = tr
   if (entry !== undefined) {
     fs.writeFileSync(path.join(root, '.gsd-capabilities.json'), JSON.stringify({ version: 1, updatedAt: 'x', entries: { memanto: entry } }));
   }
+  // Round-10 WR-01: a ledger that exists but cannot be read.
+  const lf = path.join(root, '.gsd-capabilities.json');
+  if (ledger === 'fifo') {
+    fs.rmSync(lf, { force: true });
+    require('node:child_process').execFileSync('mkfifo', [lf]);
+  }
+  if (ledger === 'invalid') fs.writeFileSync(lf, '{"entries":');
 }
 
 const MATRIX = [
@@ -969,11 +1076,48 @@ const MATRIX = [
   ['global entry missing version', { global: { entry: { ...COMMITTED, version: undefined } }, project: { entry: COMMITTED } }, null],
   ['global manifest with another id', { global: { manifestId: 'other', entry: COMMITTED }, project: { entry: COMMITTED } }, null],
   ['project entry missing files', { project: { entry: { ...COMMITTED, files: undefined } } }, null],
+  // Round-10 WR-01: an unreadable ledger never selects that scope, and never falls back.
+  ['global ledger is a FIFO, project ledgered', { global: { entry: COMMITTED, ledger: 'fifo' }, project: { entry: COMMITTED } }, null],
+  ['global ledger is not valid JSON, project ledgered', { global: { entry: COMMITTED, ledger: 'invalid' }, project: { entry: COMMITTED } }, null],
+  ['global absent, project ledger is a FIFO', { project: { entry: COMMITTED, ledger: 'fifo' } }, null],
 ];
 
 // Round-9 IN-02: the loader (capability-loader.cjs ledgerOverlayIds) treats an
 // entry as pending only when _pending is truthy; a present but falsy _pending
 // is neither pending nor committed.
+// Round-10 WR-01: a ledger that exists but cannot be read is 'unreadable',
+// never 'none'; only a missing ledger, or a readable one with no memanto
+// entry, is 'none'.
+test('ledgerState: an unreadable ledger is its own state', (t) => {
+  const { ledgerState, unreadableFiles } = require('../lib/gate-bundle.cjs');
+  const mk = (write) => {
+    const root = env.tmpDir('memanto-led-');
+    fixtureScope(root, { entry: COMMITTED });
+    if (write) write(path.join(root, '.gsd-capabilities.json'));
+    return root;
+  };
+  assert.equal(ledgerState(mk((f) => fs.rmSync(f))), 'none');
+  assert.equal(ledgerState(mk((f) => fs.writeFileSync(f, JSON.stringify({ version: 1, entries: {} })))), 'none');
+  const invalid = mk((f) => fs.writeFileSync(f, '{'));
+  assert.equal(ledgerState(invalid), 'unreadable');
+  assert.deepEqual(unreadableFiles(invalid).map((u) => [u.kind, u.cause]), [['ledger', 'invalid']]);
+  const big = mk((f) => fs.writeFileSync(f, ' '.repeat(8 * 1024 * 1024 + 1)));
+  assert.equal(ledgerState(big), 'unreadable');
+  const dir = mk((f) => {
+    fs.rmSync(f);
+    fs.mkdirSync(f);
+  });
+  assert.equal(ledgerState(dir), 'unreadable');
+  if (POSIX) {
+    const denied = mk();
+    const f = path.join(denied, '.gsd-capabilities.json');
+    if (denyRead(f)) {
+      t.after(() => fs.chmodSync(f, 0o644));
+      assert.equal(ledgerState(denied), 'unreadable');
+    }
+  }
+});
+
 test('ledgerState: _pending counts only when truthy, as in the loader', () => {
   const { ledgerState, isInstalledBundle } = require('../lib/gate-bundle.cjs');
   const cases = [
