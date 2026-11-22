@@ -157,7 +157,7 @@ It reports the gate's own checks (agent id, MemPalace, URLs, health) and these d
 | `engines` | `error` | The installed gsd-core version is outside the manifest's `engines.gsd` range (fails open). |
 | `render:<point>` | `error` | No memanto hook renders at a declared loop point, for example `render:discuss:pre`. The host's load-failure reason is shown when it gives one. |
 | `duplicate-install` | `warn` | memanto is installed in both global and project scope; gsd-core keeps the global one. |
-| `gate-bundle` | `error` | The `discuss:pre` gate would run a bundle other than the one gsd-core loaded, finds no installed bundle at all, or a scope directory holds a `scripts/gate.cjs` that is not part of an installed bundle (stray or planted code). |
+| `gate-bundle` | `error` | The `discuss:pre` gate would run a bundle other than the one gsd-core loaded, finds no installed bundle at all, or a scope directory holds a `scripts/gate.cjs` that is not part of an installed bundle (stray or planted code). The fix names the stray copy: a directory that no ledger lists is deleted by hand, because `gsd-tools capability remove` only removes ledgered installs. The fix never tells you to remove an installed bundle. |
 | `discuss-bypass` | `warn` | Always reported: `/gsd-discuss-phase --power` and `--assumptions` (and `workflow.discuss_mode: "assumptions"`) skip the `discuss:pre` gate. |
 
 Doctor reports `check-probe`, `capability-list` or `doctor-internal` as an `error` only when doctor itself fails internally.

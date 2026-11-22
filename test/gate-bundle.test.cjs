@@ -211,6 +211,22 @@ test('resolveGateBundle never selects the project copy while a global capability
   assert.equal(resolveGateBundle({ gsdHome: h, projectRoot: project }), null);
 });
 
+// Round-2 WR-03: the hint must never remove the scope gsd-core loaded or a
+// legitimate install; it names the stray copy.
+test('doctor: a hand-copied global bundle next to a project install names the global copy to delete, never the project install', () => {
+  const h = env.tmpDir('memanto-home-');
+  const project = emptyAgentProject();
+  const bundle = projectInstall(project, h);
+  const stray = handCopyGlobal(h);
+  const d = doctor(project, h, bundle);
+  const r = d.check('gate-bundle');
+  assert.equal(r && r.status, 'error', JSON.stringify(d.rep));
+  assert.ok(r.fix.includes(`delete ${stray}`), r.fix);
+  assert.ok(!/capability remove memanto --scope project/.test(r.fix), `fix removes the project install: ${r.fix}`);
+  assert.ok(!r.fix.includes(`delete ${bundle}`), r.fix);
+  assert.ok(r.fix.includes(bundle), `fix should say the project install is kept: ${r.fix}`);
+});
+
 test('a global install is still preferred over a project install, as gsd-core does', () => {
   const h = env.tmpDir('memanto-home-');
   const project = emptyAgentProject();

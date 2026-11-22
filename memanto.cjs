@@ -269,24 +269,50 @@ function duplicateCheck(scopeDirs) {
 // gsd-core loaded, when no installed bundle exists while one is loaded, or when
 // a scope directory holds gate code that is not an installed bundle (stray or
 // planted). rows is null when capability list could not be read.
+// Round-2 WR-03: a fix hint never removes the copy gsd-core loaded when it is
+// installed, nor any installed copy. It names the stray copy: a directory with
+// no committed ledger entry is deleted by hand, because gsd-tools capability
+// remove only removes ledgered installs.
 function gateBundleCheck(rows, scopeDirs, roots) {
   const active = rows ? rows.find((r) => r.status === 'active') : null;
   const loaded = active ? scopeDirs[active.scope] : null;
   const resolved = gateBundle.resolveGateBundle(roots);
+  const installed = {
+    global: gateBundle.isInstalledBundle(roots.gsdHome),
+    project: gateBundle.isInstalledBundle(roots.projectRoot),
+  };
+  const keep = (scope) => (installed[scope] ? `; keep the installed ${scope} bundle at ${scopeDirs[scope]}` : '');
   if (loaded && resolved && path.resolve(resolved) !== path.resolve(loaded)) {
+    // Only reachable as: the global bundle is installed, but gsd-core skipped it
+    // (failed validation, outside engines.gsd) and loaded the project one.
+    const other = active.scope === 'global' ? 'project' : 'global';
     return record(
       'gate-bundle',
       'error',
       clean(`the discuss:pre gate would run ${resolved}/scripts/gate.cjs, but gsd-core loaded the bundle at ${loaded}`, REASON_MAX),
-      `remove one copy so a single installed bundle remains: gsd-tools capability remove memanto --scope ${active.scope === 'global' ? 'project' : 'global'}`,
+      clean(
+        `gsd-core did not load the installed ${other} bundle at ${resolved}: fix the load error the loaded, engines and render checks report, ` +
+          `or replace it: gsd-tools capability install npm:@taoc/gsd-memanto@${ownVersion()} --yes${other === 'project' ? ' --scope project' : ''}${keep(active.scope)}`,
+        600,
+      ),
     );
   }
   if (loaded && !resolved) {
+    const strayScope = installed[active.scope] ? (active.scope === 'global' ? 'project' : 'global') : active.scope;
+    const strayDir = strayScope === active.scope ? loaded : scopeDirs.global;
+    const otherScope = strayScope === 'global' ? 'project' : 'global';
+    const then = installed[otherScope] ? keep(otherScope) : `, then ${reinstallFix()}`;
     return record(
       'gate-bundle',
       'error',
-      clean(`gsd-core loaded memanto from ${loaded}, but the discuss:pre gate finds no installed bundle (capability.json plus a committed ledger entry) and blocks every run`, REASON_MAX),
-      reinstallFix(),
+      clean(
+        `gsd-core loaded memanto from ${loaded}, but the discuss:pre gate finds no installed bundle to run (capability.json plus a committed ledger entry): ` +
+          `${strayDir} has no committed ${strayScope} ledger entry` +
+          (strayScope === 'global' ? ', and the gate never falls back to a project copy while a global capability.json exists' : '') +
+          '; it blocks every run',
+        REASON_MAX * 2,
+      ),
+      clean(`delete ${strayDir} by hand (gsd-tools capability remove cannot remove a copy that no ledger lists)${then}`, 600),
     );
   }
   for (const [scope, dir] of Object.entries(scopeDirs)) {
