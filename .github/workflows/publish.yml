@@ -179,14 +179,13 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/gsd-core" --no-audit --no-fund --ignore-scripts "@opengsd/gsd-core@$GSD_VERSION"
           echo "GSD_CORE_DIR=$RUNNER_TEMP/gsd-core/node_modules/@opengsd/gsd-core/gsd-core" >> "$GITHUB_ENV"
 
+      # npm test (tools/run-tests.cjs) fails the step when one test or fewer ran, so no second count check is needed.
       - name: Test
         shell: bash
         env:
           MEMANTO_SPIKE_INSTALLER: "1"
         run: |
-          set -o pipefail
-          npm test 2>&1 | tee test.log
-          awk '/^# tests /{ n = $3 } END { if (n + 0 <= 1) { print "expected more than one test, got " n + 0; exit 1 } }' test.log
+          npm test
 
       - name: Show what would be published
         run: npm pack --dry-run

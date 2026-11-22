@@ -71,6 +71,17 @@ test('every package.json files entry exists in the repo', () => {
   assert.deepEqual(missing, [], 'package.json files lists paths that do not exist');
 });
 
+// IN-07: the "more than one test ran" check lives in tools/run-tests.cjs only;
+// both workflows rely on npm test's exit code instead of re-parsing the TAP log.
+test('the test-count floor is enforced once, by tools/run-tests.cjs, and the workflows run npm test', () => {
+  assert.match(read('tools/run-tests.cjs'), /count <= 1/);
+  for (const wf of ['.github/workflows/ci.yml', '.github/workflows/publish.yml']) {
+    const text = read(wf);
+    assert.match(text, /^\s+npm test\s*$/m, `${wf} does not run npm test`);
+    assert.ok(!/# tests/.test(text), `${wf} re-checks the TAP test count`);
+  }
+});
+
 // --- WR-04: the release job keeps the write token off disk and pins npm ---
 
 function workflowSteps(text) {
