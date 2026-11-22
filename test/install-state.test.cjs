@@ -324,8 +324,12 @@ for (const [name, o, state, loadedScope, extra] of CASES) {
     const cls = classifyInstall(evOf(r));
     assert.equal(cls.state, state, JSON.stringify(cls));
     const recs = installRecords(cls, OPTS);
-    // doctor prints loaded only when memanto is enabled.
-    assertConsistent([r.enabled ? recs.loaded : null, recs.consent, recs.duplicate, recs.gateBundle], factsOf(r, loadedScope), name);
+    // Round-9 IN-01: doctor prints loaded also when memanto is disabled (a warn).
+    assertConsistent([recs.loaded, recs.consent, recs.duplicate, recs.gateBundle], factsOf(r, loadedScope), name);
+    if (!r.enabled) {
+      assert.equal(recs.loaded.status, 'warn', JSON.stringify(recs.loaded));
+      assert.ok(recs.loaded.message.startsWith('memanto.enabled is not true, so gsd-core loads no memanto hook'), recs.loaded.message);
+    }
     // The case's own loaded column agrees with the classifier.
     const scope = loadedScope === '?' ? null : loadedScope;
     assert.equal(cls.loaded ? cls.loaded.scope : null, scope, JSON.stringify(cls.loaded));

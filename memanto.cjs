@@ -513,7 +513,8 @@ function collectChecks(cwd) {
 
   if (listFailure) checks.push(listFailure);
   if (unreadable) checks.push(unreadable);
-  if (located.ok && enabled) checks.push(recs.loaded);
+  // Round-9 IN-01: with memanto disabled, loaded is a warn (see the README).
+  if (located.ok) checks.push(recs.loaded);
   if (listOk) {
     checks.push(recs.consent);
     checks.push(enginesCheck(rows, scopeDirs, located.version));
