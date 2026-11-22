@@ -164,7 +164,7 @@ test('doctor prints only scheme://host:port for an accepted endpoint with userin
   for (const raw of [true, false]) {
     const res = viaGsd(project, { raw });
     const out = res.stdout + res.stderr;
-    assert.ok(out.includes(`${servers.ok.url}/<base path>/health`), out);
+    assert.ok(out.includes(`${servers.ok.url}/BASE_PATH/health`), out);
     for (const secret of ['alice', 's3cret', 'tenant-42']) assert.ok(!out.includes(secret), `leaked ${secret}: ${out}`);
   }
 });
