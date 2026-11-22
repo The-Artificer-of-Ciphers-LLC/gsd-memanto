@@ -232,7 +232,7 @@ Not fixable inside a capability without modifying gsd-core (T-01-17, accepted). 
 
 ## Acceptance run (D-08)
 
-Status: **dev-bundle acceptance complete (Task 1).** All five discuss runs (a-e), both doctor forms and the gsd-core comparison are done. The first attempt at runs (c) and (d) was denied by the Claude Code auto-mode classifier. The owner then chose a guarded rerun (option B, decided in the orchestrator session through AskUserQuestion), and every run below then completed with no further denial. Task 2 (owner publish) and Task 3 (re-run on the published package) are pending.
+Status: **dev-bundle acceptance complete (Task 1).** All five discuss runs (a-e), both doctor forms and the gsd-core comparison are done. The first attempt at runs (c) and (d) was denied by the Claude Code auto-mode classifier. The owner then chose a guarded rerun (option B, decided in the orchestrator session through AskUserQuestion), and every run below then completed with no further denial. Task 2 (owner publish) is done, and Task 3 re-observed the core results on the published `@taoc/gsd-memanto@0.1.0` (see "Post-publish acceptance" below).
 
 Run by the agent on 2026-11-21 from 05:07Z, against the owner's real home (GSD_HOME unset). Transcripts and snapshots are in the session scratchpad (`<scratch>/acc0109/`), not in the repo.
 
@@ -341,4 +341,48 @@ On the first attempt, the Claude Code auto-mode classifier denied three commands
 2. Headless run (d) (healthy). If it ran, the gate would pass and `/gsd-discuss-phase --auto` would continue inside the throwaway project. That means writing and committing CONTEXT.md there, under `--permission-mode dontAsk`.
 3. A host-layer `gsd_run check predicate` for config (d). It was meant only as supplementary evidence, and the agent dropped it after the denial.
 
-Published package: pending (Task 3).
+### Release (Task 2, owner) and publishing findings
+
+The owner staged the release and approved it with 2FA. The orchestrator verified the results: Release run 44964773176 succeeded, tag `v0.1.0` points to `3dc63bc` (`chore(release): 0.1.0`) on `origin/main`, and GitHub Release v0.1.0 exists. `npm view @taoc/gsd-memanto versions` returns `["0.0.0-stage", "0.0.0", "0.1.0"]`.
+
+- **npm has no pending trusted-publisher flow for a package that does not exist yet.** The plan's `user_setup` assumed one. The owner first hand-published a two-file placeholder `0.0.0`, and the registry also lists a stub `0.0.0-stage` ("Temporary package placeholder for staged publishing").
+- **The npmjs.com trusted-publisher form offers only "allow publish" and "allow dist-tag".** The owner therefore created the publisher with the CLI: `npm trust github @taoc/gsd-memanto --file publish.yml --repo The-Artificer-of-Ciphers-LLC/gsd-memanto --env npm-publish --allow-stage-publish`. There is no `--allow-publish`, so the owner keeps the staged 2FA approval. The publisher showed "pending validation" until the first release run validated it. The header comment of `publish.yml` now says this. The README has no release section, and the repo has no CONTRIBUTING.md.
+
+### Post-publish acceptance (Task 3)
+
+Published package: `@taoc/gsd-memanto@0.1.0`, integrity `sha512-VZ5cL9hx5riOcFmuWmC4VZQNUqmIVUFlUYekVdKCJ1t/MKUZSGxIO2GBcKtxkO7wcMv7pphchayduOgo+NJvoQ==`, installed with `gsd_run capability install npm:@taoc/gsd-memanto@0.1.0 --integrity sha512-VZ5cL9hx5riOcFmuWmC4VZQNUqmIVUFlUYekVdKCJ1t/MKUZSGxIO2GBcKtxkO7wcMv7pphchayduOgo+NJvoQ== --yes`. The command used `gsd_run`, because the `gsd-tools` on PATH is 1.17.0.
+
+Run on 2026-11-22 from 00:07Z:
+
+```
+$ gsd_run capability remove memanto          -> exit 0, removed ".gsd/capabilities/memanto", dataPreserved true; ledger entries {}
+$ gsd_run capability install npm:@taoc/gsd-memanto@0.1.0 --integrity sha512-VZ5c...NJvoQ== --yes
+{"status":"installed","id":"memanto","version":"0.1.0","scope":"global","disclosure":[... "memanto -> memanto.cjs [router: route]", "content: sha512 pin supplied and verified before staging"]}   exit 0
+$ gsd_run capability list --raw               (memanto)
+{"id":"memanto","version":"0.1.0","source":"npm:@taoc/gsd-memanto@0.1.0","scope":"global","status":"active","reason":null}
+~/.gsd-capabilities.json entries.memanto: {"version":"0.1.0","source":"npm:@taoc/gsd-memanto@0.1.0","integrity":"sha512-VZ5c...NJvoQ==","files":[".gsd/capabilities/memanto"],"sharedEdits":[]}
+$ npm pack @taoc/gsd-memanto@0.1.0 --dry-run --json     -> integrity sha512-VZ5c...NJvoQ== (same as dist.integrity)
+installed tree vs tarball file list (LC_ALL=C sort, diff): equal, 11 files:
+  LICENSE README.md capability.json lib/checks.cjs lib/config.cjs lib/gsd-host.cjs lib/health.cjs memanto.cjs package.json scripts/check-probe.cjs scripts/gate.cjs
+  no test/, tools/, .planning/ or CI-workflow paths; installed capability.json "version": "0.1.0"
+pub-a #6 CALL Bash: d="${GSD_HOME:-$HOME}/.gsd/capabilities/memanto"; ...; timeout 20 node "$d/scripts/gate.cjs"; echo "EXIT=$?"
+      RESULT: memanto: BLOCKED [agent-id] memanto.agent_id is empty -> gsd_run config-set memanto.agent_id <agent-id> (memanto.enabled=false disables Memanto for this project) EXIT=1
+   FINAL (7 turns, 32 s, USD 0.61): The agent stopped Phase 1 (Core counter) discussion before writing anything: the blocking `memanto` gate at `discuss:pre` failed.
+pub-d (bounded, --disallowedTools "Bash(git commit:*)")
+   #6 CALL Bash: grep -nE "fetch|http|exec|spawn|writeFile|unlink" $HOME/.gsd/capabilities/memanto/lib/checks.cjs ...; d="$HOME/.gsd/capabilities/memanto"; timeout 20 node "$d/scripts/gate.cjs"; echo "EXIT=$?"
+      RESULT: ... EXIT=0
+   #7 CALL Bash: cat $W/templates/context.md; ... discussion-log.md; ... modes/chain.md    (write_context preparation, past discuss:pre)
+   HARNESS: stopped ("first post-gate step returned"), exit 143. No CONTEXT.md written yet, no commit.
+```
+
+| Run (published 0.1.0) | Expected | Observed | Verdict |
+|------------------------|----------|----------|---------|
+| install via `npm:` + `--integrity` | installed, active, global, 0.1.0 | `installed`, `active`, global, 0.1.0; pin verified before staging | pass |
+| installed tree vs tarball | equal file list, no dev paths | 11 files, equal; 0 dev paths | pass |
+| a (agent_id "") | halt `[agent-id]`, no CONTEXT.md | halt `[agent-id]` only; no CONTEXT.md, no commit | pass |
+| d (healthy) | gate passes, discuss continues | gate `EXIT=0`; next step prepares `write_context` | pass |
+| doctor `gsd_run memanto doctor`, project d | exit 0 | exit 0, `0 error(s), 1 warning(s)`, `ok loaded memanto 0.1.0 is active in global scope` | pass |
+| doctor `node "$HOME/.gsd/capabilities/memanto/memanto.cjs" doctor`, project d | exit 0 | exit 0; `--raw` exit 0 with `{ok: 13, warn: 1}` | pass |
+| doctor, both forms, project a | exit 1 naming agent-id | both exit 1, `error agent-id  memanto.agent_id is empty` | pass |
+
+After Task 3, the gsd-core tree is unchanged (627 files, aggregate sha256 `80873022...a789e`, per-file list byte-identical). The sha256 values of `~/.gsd/consent.json` and `~/.claude/settings.json` are unchanged. Neither post-publish transcript has a `memanto` CLI call. Real Memanto received only `GET /health`, from the gate and from doctor.

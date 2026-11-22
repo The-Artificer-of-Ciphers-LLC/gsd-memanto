@@ -5,7 +5,12 @@ name: Release
 # then waits for the approval and creates the GitHub Release. Nothing releases automatically; pushing a tag does not.
 #
 # The file is called publish.yml because the npm trusted publisher is bound to that file name (and to the
-# npm-publish environment below). Renaming either one means re-creating the trusted publisher on npmjs.com.
+# npm-publish environment below). Renaming either one means re-creating the trusted publisher. The npmjs.com form
+# offers only "allow publish" and "allow dist-tag", so create the stage-only publisher with the npm CLI instead:
+#   npm trust github @taoc/gsd-memanto --file publish.yml --repo The-Artificer-of-Ciphers-LLC/gsd-memanto \
+#     --env npm-publish --allow-stage-publish
+# It reads "pending validation" until the first release run uses it. npm has no pending-publisher flow for a
+# package that does not exist yet, so the first 0.1.0 needed a hand-published placeholder version first.
 #
 # Authentication is npm trusted publishing (OIDC): there is no npm token and no NPM_TOKEN secret. Do not set
 # NODE_AUTH_TOKEN anywhere in this job: even an empty value stops npm falling back to OIDC.
