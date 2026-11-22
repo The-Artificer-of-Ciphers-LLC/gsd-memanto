@@ -3,9 +3,9 @@ phase: "1"
 slug: "walking-skeleton"
 # status lifecycle: draft (seeded by plan-phase) → validated (set by validate-phase §6)
 # audit-milestone §5.5 distinguishes NOT-VALIDATED (draft) from PARTIAL (validated + nyquist_compliant: false) (#2117)
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: validated
+nyquist_compliant: true
+wave_0_complete: true
 created: "2026-11-20"
 ---
 
@@ -43,21 +43,21 @@ Requirement-level map (task IDs are filled in by the planner/executor):
 
 | Requirement | Behavior | Test Type | Automated Command | File Exists | Status |
 |-------------|----------|-----------|-------------------|-------------|--------|
-| INST-01 | real CLI install into temp `GSD_HOME`; ledger entry; no gsd-core file changed | integration | `node --test test/install.test.cjs` | ❌ W0 | ⬜ pending |
-| INST-02 | `loadRegistry` has `memanto`; zero warnings with `id === 'memanto'`; zero diagnostics | integration | `node --test test/manifest.test.cjs` | ❌ W0 | ⬜ pending |
-| INST-03 | `validateHooksWired(manifest, getWiredKinds(root))` empty; negative fixtures error | unit/integration | `node --test test/dispatch.test.cjs` | ❌ W0 | ⬜ pending |
-| INST-04 | each loader-trap fixture produces a warning; shipped manifest has none | unit | `node --test test/traps.test.cjs` | ❌ W0 | ⬜ pending |
-| INST-05 | builtins-only requires, no symlinks/`node_modules`, sync router, bundle digest unchanged after gate+doctor, pack list = whitelist | unit | `node --test test/bundle.test.cjs` | ❌ W0 | ⬜ pending |
-| CONF-01 | `render-hooks discuss:pre` returns 0 memanto hooks unless `memanto.enabled === true` | integration | `node --test test/activation.test.cjs` | ❌ W0 | ⬜ pending |
-| CONF-02 | gate blocks on empty/whitespace/missing `memanto.agent_id` | integration | `node --test test/gate.test.cjs` | ❌ W0 | ⬜ pending |
-| CONF-03 | both `/health` endpoints checked; each failure mode blocks with its own id | integration (fake REST) | `node --test test/health.test.cjs` | ❌ W0 | ⬜ pending |
-| GATE-03 | `mempalace.enabled === true` blocks naming Memanto and MemPalace | integration | `node --test test/gate.test.cjs` | ❌ W0 | ⬜ pending |
-| GATE-06 | doctor errors on enabled-not-loaded, not-consented, engines mismatch, not-rendering; no writes; zero memanto spawns | integration | `node --test test/doctor.test.cjs` | ❌ W0 | ⬜ pending |
-| TEST-01 | temp `GSD_HOME`, real loader, real `render-hooks`; real `~/.gsd` untouched | infra | full suite | ❌ W0 | ⬜ pending |
-| TEST-02 | fake REST server + fake `memanto` argv recorder on temp `PATH` | integration | `node --test test/gate.test.cjs test/doctor.test.cjs` | ❌ W0 | ⬜ pending |
-| D-05 contract | gate config resolver equals `gsd_run config-get` | integration | `node --test test/config-contract.test.cjs` | ❌ W0 | ⬜ pending |
-| D-04 budget | all checks failing: message ≤ 2000 chars, break-glass line survives | integration | `node --test test/gate.test.cjs` | ❌ W0 | ⬜ pending |
-| D-10 spike regressions | render/predicate/ref.command/prose guards/skill reachability | integration | `node --test test/spike-regression.test.cjs` | ❌ W0 | ⬜ pending |
+| INST-01 | real CLI install into temp `GSD_HOME`; ledger entry; no gsd-core file changed | integration | `node --test test/install.test.cjs` | ✅ | ✅ green |
+| INST-02 | `loadRegistry` has `memanto`; zero warnings with `id === 'memanto'`; zero diagnostics | integration | `node --test test/manifest.test.cjs` | ✅ | ✅ green |
+| INST-03 | `validateHooksWired(manifest, getWiredKinds(root))` empty; negative fixtures error | unit/integration | `node --test test/dispatch.test.cjs` | ✅ | ✅ green |
+| INST-04 | each loader-trap fixture produces a warning; shipped manifest has none | unit | `node --test test/traps.test.cjs` | ✅ | ✅ green |
+| INST-05 | builtins-only requires, no symlinks/`node_modules`, sync router, bundle digest unchanged after gate+doctor, pack list = whitelist | unit | `node --test test/bundle.test.cjs` | ✅ | ✅ green |
+| CONF-01 | `render-hooks discuss:pre` returns 0 memanto hooks unless `memanto.enabled === true` | integration | `node --test test/activation.test.cjs` | ✅ | ✅ green |
+| CONF-02 | gate blocks on empty/whitespace/missing `memanto.agent_id` | integration | `node --test test/gate.test.cjs` | ✅ | ✅ green |
+| CONF-03 | both `/health` endpoints checked; each failure mode blocks with its own id | integration (fake REST) | `node --test test/health.test.cjs` | ✅ | ✅ green |
+| GATE-03 | `mempalace.enabled === true` blocks naming Memanto and MemPalace | integration | `node --test test/gate.test.cjs` | ✅ | ✅ green |
+| GATE-06 | doctor errors on enabled-not-loaded, not-consented, engines mismatch, not-rendering; no writes; zero memanto spawns | integration | `node --test test/doctor.test.cjs` | ✅ | ✅ green |
+| TEST-01 | temp `GSD_HOME`, real loader, real `render-hooks`; real `~/.gsd` untouched | infra | full suite | ✅ | ✅ green |
+| TEST-02 | fake REST server + fake `memanto` argv recorder on temp `PATH` | integration | `node --test test/gate.test.cjs test/doctor.test.cjs` | ✅ | ✅ green |
+| D-05 contract | gate config resolver equals `gsd_run config-get` | integration | `node --test test/config-contract.test.cjs` | ✅ | ✅ green |
+| D-04 budget | all checks failing: message ≤ 2000 chars, break-glass line survives | integration | `node --test test/gate.test.cjs` | ✅ | ✅ green |
+| D-10 spike regressions | render/predicate/ref.command/prose guards/skill reachability | integration | `node --test test/spike-regression.test.cjs` | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -65,12 +65,12 @@ Requirement-level map (task IDs are filled in by the planner/executor):
 
 ## Wave 0 Requirements
 
-- [ ] `package.json` (`files` whitelist, `engines.node >=24`, tap `test` script), `.npmrc`, `.gitignore`, `LICENSE`, `CHANGELOG.md`
-- [ ] `test/helpers/gsd-env.cjs` — temp `GSD_HOME`, temp project, install, `gsd()` spawner, registry oracle
-- [ ] `test/helpers/fake-api.cjs` — `node:http` fake REST, port 0, scripted status/body/delay
-- [ ] `test/helpers/fake-memanto.cjs` — argv recorder on a temp `PATH`
-- [ ] All test files above, RED first (TDD mode)
-- [ ] `tools/stage-bundle.cjs` — stage + install into a temp `GSD_HOME`
+- [x] `package.json` (`files` whitelist, `engines.node >=24`, tap `test` script), `.npmrc`, `.gitignore`, `LICENSE`, `CHANGELOG.md`
+- [x] `test/helpers/gsd-env.cjs` — temp `GSD_HOME`, temp project, install, `gsd()` spawner, registry oracle
+- [x] `test/helpers/fake-api.cjs` — `node:http` fake REST, port 0, scripted status/body/delay
+- [x] `test/helpers/fake-memanto.cjs` — argv recorder on a temp `PATH`
+- [x] All test files above, RED first (TDD mode)
+- [x] `tools/stage-bundle.cjs` — stage + install into a temp `GSD_HOME`
 
 ---
 
@@ -85,11 +85,19 @@ Requirement-level map (task IDs are filled in by the planner/executor):
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 30s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 30s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** approved 2026-11-22 (validate-phase: 15/15 requirement rows green; full suite 551 tests, 550 pass, 0 fail, 1 env-gated skip; CI green on ubuntu/macOS x gsd-core 1.20.1/1.22.0). Manual-only rows are recorded in 01-SPIKE.md. CONF-02 unknown-id half is deferred to Phase 2.
+
+## Validation Audit 2026-11-22
+
+| Metric | Count |
+|---|---|
+| Gaps found | 0 |
+| Resolved | 0 |
+| Escalated | 0 |
