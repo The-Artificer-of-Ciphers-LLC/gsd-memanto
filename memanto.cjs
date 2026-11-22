@@ -10,7 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { resolveConfig } = require('./lib/config.cjs');
-const { cap } = require('./lib/health.cjs');
+const { cap, CONTROL_CHARS } = require('./lib/health.cjs');
 const host = require('./lib/gsd-host.cjs');
 const gateBundle = require('./lib/gate-bundle.cjs');
 
@@ -22,14 +22,13 @@ const INTERNAL_FIX = 'report this failure; memanto.enabled=false disables Memant
 const REASON_MAX = 300;
 // Shared with every host query in lib/gsd-host.cjs (WR-01).
 const { PROBE_TIMEOUT_MS } = host;
-const CONTROL = /[\x00-\x1f\x7f-\x9f]/g;
 
 function record(id, status, message, fix) {
   return { id, status, message, fix: fix || '' };
 }
 
 function clean(value, max) {
-  return cap(String(value).replace(CONTROL, '?'), max);
+  return cap(String(value).replace(CONTROL_CHARS, '?'), max);
 }
 
 function readJson(file) {

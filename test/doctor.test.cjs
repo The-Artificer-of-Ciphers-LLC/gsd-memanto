@@ -289,6 +289,20 @@ test('memanto.enabled not true: enabled warns and the loaded, render and gate ch
   for (const id of ['loaded', 'render:discuss:pre', 'agent-id']) assert.equal(rec(rep, id), undefined, id);
 });
 
+// --- IN-03: doctor neutralises the Unicode line and paragraph separators too ---
+
+test('a GSD_CORE_DIR holding U+2028 and U+2029 is echoed without line separators', () => {
+  const core = path.join(env.tmpDir('memanto-nocore-'), 'a\u2028b\u2029c');
+  const project = env.makeProject({ config: healthyConfig() });
+  const res = direct(project, { extraEnv: { GSD_CORE_DIR: core } });
+  const r = rec(report(res), 'gsd-core-located');
+  assert.equal(r.status, 'error', JSON.stringify(r));
+  assert.ok(r.message.includes('a?b?c'), JSON.stringify(r.message));
+  assert.ok(!/[\u2028\u2029]/.test(res.stdout), 'raw output carries a line separator');
+  const text = direct(project, { raw: false, extraEnv: { GSD_CORE_DIR: core } });
+  assert.ok(!/[\u2028\u2029]/.test(text.stdout), 'text output carries a line separator');
+});
+
 // --- WR-03: an invalid GSD_PROJECT is reported as an environment problem ---
 
 test('an invalid GSD_PROJECT: enabled warns naming the variable and config-unreadable says to unset it', () => {
