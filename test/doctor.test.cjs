@@ -289,6 +289,29 @@ test('memanto.enabled not true: enabled warns and the loaded, render and gate ch
   for (const id of ['loaded', 'render:discuss:pre', 'agent-id']) assert.equal(rec(rep, id), undefined, id);
 });
 
+// --- IN-06: probe records are validated; an unknown status counts as an error ---
+
+test('gateChecks coerces malformed probe records to error records with string fields', () => {
+  const doctor = require('../memanto.cjs');
+  const dir = env.tmpDir('memanto-badprobe-');
+  const probe = path.join(dir, 'bad-probe.cjs');
+  const checks = [
+    { id: 'ok-one', status: 'ok', message: 'fine', fix: '' },
+    { id: 'bogus', status: 'bogus', message: 'm', fix: '' },
+    { id: 'numeric', status: 42, message: 7, fix: null },
+    { id: 'missing' },
+    null,
+  ];
+  fs.writeFileSync(probe, `process.stdout.write(${JSON.stringify(JSON.stringify({ checks }))});\n`);
+  const out = doctor.gateChecks(dir, { probe, timeoutMs: 5000 });
+  assert.equal(out.length, checks.length, JSON.stringify(out));
+  assert.deepEqual(out.map((c) => c.status), ['ok', 'error', 'error', 'error', 'error']);
+  for (const c of out) {
+    for (const k of ['id', 'status', 'message', 'fix']) assert.equal(typeof c[k], 'string', JSON.stringify(c));
+    if (c.status === 'error') assert.ok(c.fix.length > 0, `no fix for ${JSON.stringify(c)}`);
+  }
+});
+
 // --- IN-04: an incompatible row in an unknown scope never reads a cwd capability.json ---
 
 test('enginesCheck with an unknown scope prints (unknown range), not a capability.json from the cwd', () => {

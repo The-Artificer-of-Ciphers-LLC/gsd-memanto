@@ -67,6 +67,24 @@ function reinstallFix() {
 // (owner decision, 2026-11-20) bounds everything else, such as a config file
 // that blocks on read (a FIFO), so doctor reports a check-probe error instead
 // of hanging. probe and timeoutMs are injectable for tests only.
+// IN-06: a probe record is trusted only for its known shape. A status other
+// than ok/warn/error, or a record that is not an object, becomes an error, so
+// doctor can never exit 0 on a record it does not understand.
+const STATUSES = new Set(['ok', 'warn', 'error']);
+
+function probeRecord(c) {
+  if (!c || typeof c !== 'object' || Array.isArray(c)) {
+    return record('check-probe', 'error', 'check probe returned a record that is not an object', INTERNAL_FIX);
+  }
+  const id = clean(c.id === undefined ? 'check-probe' : c.id, REASON_MAX);
+  const message = clean(c.message === undefined ? '' : c.message, REASON_MAX);
+  const fix = typeof c.fix === 'string' ? c.fix : '';
+  if (!STATUSES.has(c.status)) {
+    return record(id, 'error', clean(`check probe returned status ${JSON.stringify(c.status)}: ${message}`, REASON_MAX), fix || INTERNAL_FIX);
+  }
+  return record(id, c.status, message, fix);
+}
+
 function gateChecks(cwd, { probe = PROBE, timeoutMs = PROBE_TIMEOUT_MS } = {}) {
   const res = spawnSync(process.execPath, [probe], { cwd, env: process.env, encoding: 'utf8', timeout: timeoutMs });
   if (res.error && res.error.code === 'ETIMEDOUT') {
@@ -85,7 +103,7 @@ function gateChecks(cwd, { probe = PROBE, timeoutMs = PROBE_TIMEOUT_MS } = {}) {
   try {
     const parsed = JSON.parse(res.stdout);
     if (!parsed || !Array.isArray(parsed.checks)) throw new Error('no checks array');
-    return parsed.checks.map((c) => record(String(c.id), c.status, String(c.message), c.fix));
+    return parsed.checks.map(probeRecord);
   } catch (e) {
     const why = `exit ${res.status === null ? res.signal : res.status}: ${clean(res.stderr || e.message, REASON_MAX)}`;
     return [record('check-probe', 'error', `check probe output was not readable (${why})`, INTERNAL_FIX)];
@@ -365,13 +383,17 @@ function renderText(checks) {
 function runDoctor(ctx) {
   const cwd = ctx.cwd || process.cwd();
   let checks;
+  let output;
+  // IN-06: rendering is guarded too, so a malformed record yields a
+  // doctor-internal error instead of a thrown router.
   try {
     checks = collectChecks(cwd);
+    output = ctx.raw ? JSON.stringify({ checks }) + '\n' : renderText(checks);
   } catch (e) {
     checks = [record('doctor-internal', 'error', clean(e && e.message ? e.message : e, REASON_MAX), INTERNAL_FIX)];
+    output = ctx.raw ? JSON.stringify({ checks }) + '\n' : renderText(checks);
   }
-  if (ctx.raw) process.stdout.write(JSON.stringify({ checks }) + '\n');
-  else process.stdout.write(renderText(checks));
+  process.stdout.write(output);
   process.exitCode = checks.some((c) => c.status === 'error') ? 1 : 0;
   return undefined;
 }
