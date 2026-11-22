@@ -174,25 +174,44 @@ function enginesCheck(rows, scopeDirs, hostVersion) {
   );
 }
 
+// Round-9 WR-02: the loop points gsd-core defines (loop-host-contract.cjs
+// LOOP_HOST_CONTRACT; test/render-points.test.cjs fails when they change). A
+// manifest point outside this list is never rendered, so a planted manifest
+// cannot add spawns or put control characters into a record id.
+const LOOP_POINTS = Object.freeze([
+  'discuss:pre',
+  'discuss:post',
+  'plan:pre',
+  'plan:post',
+  'execute:pre',
+  'execute:wave:pre',
+  'execute:wave:post',
+  'execute:post',
+  'verify:pre',
+  'verify:post',
+  'ship:pre',
+  'ship:post',
+]);
+
 function pointsOf(manifest, points) {
   for (const kind of ['gates', 'steps', 'contributions']) {
     for (const h of manifest && Array.isArray(manifest[kind]) ? manifest[kind] : []) {
-      if (h && typeof h.point === 'string' && !points.includes(h.point)) points.push(h.point);
+      if (points.length >= LOOP_POINTS.length) return points;
+      if (h && LOOP_POINTS.includes(h.point) && !points.includes(h.point)) points.push(h.point);
     }
   }
   return points;
 }
 
-// Round-8 CR-01: the points to render are discuss:pre, every point THIS
-// doctor's own shipped manifest declares, and every point the installed
-// manifests declare. An installed manifest with "gates": [] can no longer hide
-// the gate point, so a missing gate always shows as a render error.
-// Round-9 CR-01: the installed manifests are the ones gatherEvidence uses, read
-// once through the regular-file reader, never with a plain readFileSync.
-function declaredPoints(manifests) {
+// Round-8 CR-01: discuss:pre is always rendered, and every point THIS doctor's
+// own shipped manifest declares, so an installed manifest with "gates": []
+// cannot hide the gate point. Round-9 WR-02: an installed manifest adds its
+// points only when it is the copy gsd-core loads (loaded; null otherwise), and
+// only known loop points, at most one render per loop point.
+function pointsToRender(own, loaded) {
   const points = ['discuss:pre'];
-  pointsOf(readJson(OWN_MANIFEST), points);
-  for (const m of [manifests.global, manifests.project]) pointsOf(m, points);
+  pointsOf(own, points);
+  if (loaded) pointsOf(loaded, points);
   return points;
 }
 
@@ -270,7 +289,9 @@ function loadFailureReason(rh) {
   return m ? m[1] : line;
 }
 
-function renderCheck(point, rh, shipped) {
+function renderCheck(rawPoint, rh, shipped) {
+  // Round-9 WR-02: the point is cleaned before it reaches the id or a message.
+  const point = clean(rawPoint, 64);
   const id = `render:${point}`;
   if (!rh.ok) {
     return record(id, 'error', clean(`loop render-hooks ${point} failed: ${rh.reason}`, REASON_MAX), 'run gsd_run loop render-hooks to see the host error');
@@ -466,11 +487,21 @@ function collectChecks(cwd) {
       rows = list.rows.filter((r) => r && r.id === 'memanto');
     }
     if (enabled) {
-      for (const point of declaredPoints(manifests)) {
-        const rh = host.renderHooksAt(located.tools, point, opts);
-        if (rh.ok) renders.push({ point, rh });
-        renderChecks.push(renderCheck(point, rh, shipped));
-      }
+      const renderAll = (points) => {
+        for (const point of points) {
+          if (renders.some((r) => r.point === point) || renderChecks.some((c) => c.id === `render:${point}`)) continue;
+          const rh = host.renderHooksAt(located.tools, point, opts);
+          if (rh.ok) renders.push({ point, rh });
+          renderChecks.push(renderCheck(point, rh, shipped));
+        }
+      };
+      // Round-9 WR-02: first discuss:pre and the doctor's own points; then the
+      // points of the installed manifest gsd-core loads, if any (known loop
+      // points only, never a manifest gsd-core skipped or did not activate).
+      const own = readJson(OWN_MANIFEST);
+      renderAll(pointsToRender(own, null));
+      const first = classifyInstall(gatherEvidence({ scopeDirs, roots, rows, renders, enabled, manifests, shipped }));
+      if (first.loaded) renderAll(pointsToRender(own, manifests[first.loaded.scope]));
     }
   }
 
@@ -492,7 +523,13 @@ function collectChecks(cwd) {
   checks.push(recs.gateBundle);
   checks.push(discussBypassCheck(cfg));
   if (enabled) checks.push(...gateChecks(cwd));
-  return checks;
+  // Round-9 WR-02: no control character reaches the terminal or the JSON,
+  // whatever a record interpolated (lengths are capped where each is built).
+  return checks.map((c) => ({ ...c, id: sanitize(c.id), message: sanitize(c.message), fix: sanitize(c.fix) }));
+}
+
+function sanitize(value) {
+  return String(value === undefined || value === null ? '' : value).replace(CONTROL_CHARS, '?');
 }
 
 function renderText(checks) {
@@ -548,6 +585,8 @@ module.exports = {
   POST_COLLISION,
   POST_COLLISION_REASONS,
   PROBE_TIMEOUT_MS,
+  LOOP_POINTS,
+  pointsToRender,
 };
 
 if (require.main === module) {
