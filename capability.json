@@ -1,7 +1,7 @@
 {
   "id": "memanto",
   "role": "feature",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "title": "Memanto memory",
   "description": "Memanto-backed project memory for the GSD lifecycle. Fails closed: a blocking gate halts the workflow when the configured Memanto agent or endpoints are not healthy.",
   "tier": "full",
