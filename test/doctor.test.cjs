@@ -289,6 +289,23 @@ test('memanto.enabled not true: enabled warns and the loaded, render and gate ch
   for (const id of ['loaded', 'render:discuss:pre', 'agent-id']) assert.equal(rec(rep, id), undefined, id);
 });
 
+// --- WR-03: an invalid GSD_PROJECT is reported as an environment problem ---
+
+test('an invalid GSD_PROJECT: enabled warns naming the variable and config-unreadable says to unset it', () => {
+  const project = env.makeProject({ config: healthyConfig() });
+  const res = direct(project, { extraEnv: { GSD_PROJECT: '../x' } });
+  assert.equal(res.status, 1, `${res.stdout}${res.stderr}`);
+  const rep = report(res);
+  const enabled = rec(rep, 'enabled');
+  assert.equal(enabled.status, 'warn', JSON.stringify(enabled));
+  assert.match(enabled.message, /GSD_PROJECT/, enabled.message);
+  assert.ok(!/config file/.test(enabled.fix), enabled.fix);
+  const unreadable = rec(rep, 'config-unreadable');
+  assert.ok(unreadable, res.stdout);
+  assert.match(unreadable.message, /^GSD_PROJECT is invalid/, unreadable.message);
+  assert.match(unreadable.fix, /^unset GSD_PROJECT/, unreadable.fix);
+});
+
 // --- Post-merge owner fix 1: the check-probe spawn is time-bounded ---
 
 test('PROBE_TIMEOUT_MS bounds the check-probe spawn at 15000 ms', () => {

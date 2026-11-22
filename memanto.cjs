@@ -94,6 +94,17 @@ function gateChecks(cwd, { probe = PROBE, timeoutMs = PROBE_TIMEOUT_MS } = {}) {
 }
 
 function enabledCheck(cfg) {
+  if (!cfg.ok && cfg.kind === 'env') {
+    return {
+      enabled: true, // fail closed: run every check
+      rec: record(
+        'enabled',
+        'warn',
+        clean(`memanto.enabled could not be read: ${cfg.variable} is invalid (see config-unreadable)`, REASON_MAX),
+        clean(`unset ${cfg.variable} or set it to a name without '/', '\\' or '..'`, REASON_MAX),
+      ),
+    };
+  }
   if (!cfg.ok) {
     return {
       enabled: true, // fail closed: run every check

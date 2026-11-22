@@ -91,7 +91,7 @@ Checks, in the order they are reported:
 
 | Check id | What it checks | Fix it prints |
 |----------|----------------|---------------|
-| `config-unreadable` | The project config file exists but cannot be read or is not valid JSON. | Fix the JSON syntax in the named file, or make it readable. |
+| `config-unreadable` | The project config file exists but cannot be read or is not valid JSON, or `GSD_PROJECT` / `GSD_WORKSTREAM` holds an invalid name (a `/`, `\` or `..`). | Fix the JSON syntax in the named file, or make it readable. For an invalid variable: unset it or set it to a name without `/`, `\` or `..`. |
 | `mempalace` | `mempalace.enabled` is the boolean `true`. Memanto and the first-party MemPalace capability are mutually exclusive, so one project cannot enable both. | `gsd_run config-set mempalace.enabled false` (or `gsd_run config-set memanto.enabled false`) |
 | `agent-id` | `memanto.agent_id` is a non-empty string with no leading or trailing whitespace. The value is never echoed. | `gsd_run config-set memanto.agent_id <agent-id>` |
 | `backend-url` | `memanto.backend_url` is set and is an `http` or `https` URL. | `gsd_run config-set memanto.backend_url <http(s)://host:port>` |
