@@ -13,6 +13,7 @@ const { resolveConfig } = require('./lib/config.cjs');
 const { cap, CONTROL_CHARS } = require('./lib/health.cjs');
 const host = require('./lib/gsd-host.cjs');
 const gateBundle = require('./lib/gate-bundle.cjs');
+const { readJsonOrNull, MANIFEST_MAX_BYTES } = require('./lib/safe-read.cjs');
 const { classifyInstall, installRecords, renderFix, STATES, POST_COLLISION, POST_COLLISION_REASONS } = require('./lib/install-state.cjs');
 
 const USAGE = 'Usage: gsd_run memanto doctor [--raw]';
@@ -32,12 +33,10 @@ function clean(value, max) {
   return cap(String(value).replace(CONTROL_CHARS, '?'), max);
 }
 
+// Round-9 CR-01: never a plain readFileSync. A FIFO, device or oversized file
+// is unreadable (null) instead of blocking doctor (lib/safe-read.cjs).
 function readJson(file) {
-  try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch {
-    return null;
-  }
+  return readJsonOrNull(file, MANIFEST_MAX_BYTES);
 }
 
 function isFile(file) {
@@ -188,11 +187,46 @@ function pointsOf(manifest, points) {
 // doctor's own shipped manifest declares, and every point the installed
 // manifests declare. An installed manifest with "gates": [] can no longer hide
 // the gate point, so a missing gate always shows as a render error.
-function declaredPoints(scopeDirs) {
+// Round-9 CR-01: the installed manifests are the ones gatherEvidence uses, read
+// once through the regular-file reader, never with a plain readFileSync.
+function declaredPoints(manifests) {
   const points = ['discuss:pre'];
   pointsOf(readJson(OWN_MANIFEST), points);
-  for (const dir of [scopeDirs.global, scopeDirs.project]) pointsOf(readJson(path.join(dir, 'capability.json')), points);
+  for (const m of [manifests.global, manifests.project]) pointsOf(m, points);
   return points;
+}
+
+function readManifests(roots) {
+  return { global: gateBundle.readManifest(roots.gsdHome), project: gateBundle.readManifest(roots.projectRoot) };
+}
+
+// Round-9 CR-01: a capability.json or ledger in either scope that exists but is
+// not a regular file under the size cap (a FIFO, socket, device, a symlink to
+// one, or too large). Doctor and gsd-core both treat it as unreadable.
+function unreadableCheck(scopeDirs, roots, version) {
+  const seen = new Set();
+  const found = [];
+  for (const [scope, root] of [['global', roots.gsdHome], ['project', roots.projectRoot]]) {
+    for (const u of gateBundle.unreadableFiles(root)) {
+      if (seen.has(u.file)) continue;
+      seen.add(u.file);
+      found.push({ ...u, scope, ledgered: gateBundle.ledgerState(root) !== 'none' });
+    }
+  }
+  if (!found.length) return null;
+  const fixes = found.map((u) => {
+    if (u.kind === 'manifest' && u.ledgered) {
+      return `reinstall the ${u.scope} copy in place: gsd-tools capability install npm:@taoc/gsd-memanto@${version} --yes${u.scope === 'project' ? ' --scope project' : ''}`;
+    }
+    if (u.kind === 'manifest') return `move ${u.file} aside (no ${u.scope} ledger lists that copy)`;
+    return `move ${u.file} aside, then reinstall memanto in ${u.scope} scope (gsd-core cannot read that ledger either)`;
+  });
+  return record(
+    'unreadable-files',
+    'error',
+    clean(`${found.map((u) => u.reason).join('; ')}; doctor and gsd-core read only small regular files there, so doctor treats it as invalid and never reads it`, REASON_MAX * 2),
+    clean(fixes.join('; '), REASON_MAX * 2),
+  );
 }
 
 const isMemantoGate = (h) => Boolean(h && h.capId === 'memanto' && h.kind === 'gate');
@@ -290,10 +324,10 @@ function sameReal(a, b) {
 // null when capability list could not be read; renders are the successful
 // render-hooks results as { point, rh } (none when memanto is disabled or
 // nothing rendered).
-function gatherEvidence({ scopeDirs, roots, rows, renders, enabled = true }) {
+function gatherEvidence({ scopeDirs, roots, rows, renders, enabled = true, manifests: read }) {
   const rootOf = { global: roots.gsdHome, project: roots.projectRoot };
   const per = (fn) => ({ global: fn('global'), project: fn('project') });
-  const manifests = per((s) => gateBundle.readManifest(rootOf[s]));
+  const manifests = read || readManifests(roots);
   const alias = rootsAlias(roots);
   const runs = gateBundle.resolveGateBundle(roots);
   let gateRuns = null;
@@ -356,6 +390,7 @@ function collectChecks(cwd) {
   };
   const roots = { gsdHome, projectRoot: cwd };
   const cfg = resolveConfig({ cwd, env });
+  const manifests = readManifests(roots);
   const checks = [];
   let rows = null;
   let listOk = false;
@@ -368,7 +403,18 @@ function collectChecks(cwd) {
   checks.push(rec);
 
   let listFailure = null;
-  if (located.ok) {
+  // Round-9 CR-01: gsd-core reads .planning/config.json with a plain read, so
+  // with a FIFO or device there every capability list and render-hooks call
+  // blocks until PROBE_TIMEOUT_MS. Doctor does not start them; it reports why.
+  const hostBlocked = !cfg.ok && cfg.kind === 'read' && cfg.code === 'ENOTREG';
+  if (located.ok && hostBlocked) {
+    listFailure = record(
+      'capability-list',
+      'error',
+      clean(`doctor did not query gsd-core (capability list, render-hooks): ${cfg.error}, and gsd-core blocks reading it`, REASON_MAX),
+      clean(`replace ${cfg.path} with a regular JSON file, then run doctor again`, REASON_MAX),
+    );
+  } else if (located.ok) {
     const opts = { cwd, env };
     const list = host.capabilityList(located.tools, opts);
     if (!list.ok) {
@@ -378,7 +424,7 @@ function collectChecks(cwd) {
       rows = list.rows.filter((r) => r && r.id === 'memanto');
     }
     if (enabled) {
-      for (const point of declaredPoints(scopeDirs)) {
+      for (const point of declaredPoints(manifests)) {
         const rh = host.renderHooksAt(located.tools, point, opts);
         if (rh.ok) renders.push({ point, rh });
         renderChecks.push(renderCheck(point, rh));
@@ -388,10 +434,12 @@ function collectChecks(cwd) {
 
   // Round-7: the evidence is gathered once and classified once; loaded,
   // consent, duplicate-install and gate-bundle all come from that one result.
-  const cls = classifyInstall(gatherEvidence({ scopeDirs, roots, rows, renders, enabled }));
+  const cls = classifyInstall(gatherEvidence({ scopeDirs, roots, rows, renders, enabled, manifests }));
   const recs = installRecords(cls, { version: ownVersion(), reinstall: reinstallFix(), clean: cleanFactor });
+  const unreadable = unreadableCheck(scopeDirs, roots, ownVersion());
 
   if (listFailure) checks.push(listFailure);
+  if (unreadable) checks.push(unreadable);
   if (located.ok && enabled) checks.push(recs.loaded);
   if (listOk) {
     checks.push(recs.consent);
