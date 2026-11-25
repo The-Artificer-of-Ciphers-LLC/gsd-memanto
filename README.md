@@ -1,5 +1,7 @@
 # gsd-memanto
 
+> **PROJECT SHUT DOWN (2026-11-25).** This project is discontinued and the repository is archived. It was shut down because Memanto is not truly open source on the back end. The npm package `@taoc/gsd-memanto` is deprecated. Do not build on it.
+
 A third-party [gsd-core](https://github.com/open-gsd/gsd-core) capability that uses [Memanto](https://memanto.ai) as the project-memory provider for GSD.
 
 This README covers the Phase 1 scope: global install, per-project enablement, the blocking `discuss:pre` gate, the break-glass switch, and `memanto doctor`. When the capability is enabled and Memanto is misconfigured or unhealthy, the gate halts the workflow instead of letting it continue without memory.

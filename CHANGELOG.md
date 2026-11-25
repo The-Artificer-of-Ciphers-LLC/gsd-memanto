@@ -4,6 +4,10 @@ All notable changes to `@taoc/gsd-memanto` are listed here.
 
 ## Unreleased
 
+### Project shut down
+
+- 2026-11-25: The project is discontinued and the repository is archived. The reason: Memanto is not truly open source on the back end. `@taoc/gsd-memanto` is deprecated on npm. No further releases.
+
 ## 0.1.1 - 2026-11-22
 
 ### Security
